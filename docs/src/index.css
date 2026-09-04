@@ -1,0 +1,323 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+   The app's tokens, so the documentation looks like the thing it documents.
+
+   Copied rather than imported: the docs build must not depend on the client's
+   stylesheet, or a change to an app-only utility breaks the docs build for a
+   reason nobody would look for. Only the tokens are duplicated — the palette is
+   the product's identity, and the two drifting slightly is a far smaller problem
+   than the two being coupled.
+--------------------------------------------------------------------------- */
+@theme {
+  --color-canvas: #0a0e14;
+  --color-surface: #0f151e;
+  --color-raised: #141c27;
+  --color-overlay: #18212e;
+  --color-line: #223041;
+  --color-line-soft: #1a2431;
+
+  --color-fg: #e8eef5;
+  --color-fg-muted: #94a3b4;
+  --color-fg-subtle: #8391aa;
+
+  --color-brand-300: #a5b4ff;
+  --color-brand-400: #8b9bff;
+  --color-brand-500: #6d80f5;
+  --color-brand-600: #5464e0;
+  --color-brand-700: #4150bd;
+
+  --color-crit: #fa3e5e;
+  --color-high: #ff902c;
+  --color-med: #f8e05a;
+  --color-low: #2ed08a;
+  --color-info: #4fa1ff;
+
+  --color-ok: #2ed08a;
+  --color-warn: #f8e05a;
+  --color-danger: #fa3e5e;
+
+  --font-sans: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+
+  --radius-card: 0.875rem;
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 4px 12px rgb(0 0 0 / 0.45), 0 24px 48px -16px rgb(0 0 0 / 0.7);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+    /* Anchored headings land below the sticky header rather than under it. */
+    scroll-padding-top: 5.5rem;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(60rem 32rem at 12% -10%, rgb(109 128 245 / 0.1), transparent 60%),
+      radial-gradient(48rem 28rem at 100% 0%, rgb(82 168 255 / 0.06), transparent 60%);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgb(109 128 245 / 0.35);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The rendered Markdown.
+
+   A stylesheet rather than utility classes on every element, because the HTML is
+   produced by the Markdown renderer and never touched by hand — there is nowhere
+   to put a class. Scoped under `.prose` so nothing here can reach the chrome.
+--------------------------------------------------------------------------- */
+.prose {
+  color: var(--color-fg-muted);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+}
+
+.prose > * + * {
+  margin-top: 1rem;
+}
+
+.prose h1 {
+  color: var(--color-fg);
+  font-size: 1.875rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-top: 0;
+}
+
+.prose h2 {
+  color: var(--color-fg);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 2.5rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--color-line-soft);
+  padding-block-start: 1.5rem;
+}
+
+.prose h3 {
+  color: var(--color-fg);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  margin-top: 1.75rem;
+}
+
+.prose h4 {
+  color: var(--color-fg);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+}
+
+/* The clickable anchor a heading grows on hover. */
+.prose :is(h2, h3, h4) > a.anchor {
+  color: var(--color-fg-subtle);
+  margin-left: 0.4rem;
+  opacity: 0;
+  text-decoration: none;
+  font-weight: 400;
+  transition: opacity 0.12s ease;
+}
+.prose :is(h2, h3, h4):hover > a.anchor {
+  opacity: 1;
+}
+
+.prose strong {
+  color: var(--color-fg);
+  font-weight: 600;
+}
+
+.prose a {
+  color: var(--color-brand-300);
+  text-decoration: underline;
+  text-decoration-color: rgb(165 180 255 / 0.35);
+  text-underline-offset: 2px;
+}
+.prose a:hover {
+  text-decoration-color: currentColor;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.prose ul {
+  list-style: disc;
+}
+.prose ol {
+  list-style: decimal;
+}
+.prose li::marker {
+  color: var(--color-fg-subtle);
+}
+.prose li > ul,
+.prose li > ol {
+  margin-top: 0.375rem;
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+  background: var(--color-overlay);
+  border: 1px solid var(--color-line-soft);
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.3rem;
+  color: var(--color-fg);
+  white-space: nowrap;
+}
+
+.prose pre {
+  background: #060a10;
+  border: 1px solid var(--color-line);
+  border-radius: 0.6rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.prose pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+  color: #cfe0f5;
+}
+
+.prose blockquote {
+  border-left: 2px solid var(--color-brand-500);
+  padding-left: 0.875rem;
+  color: var(--color-fg-muted);
+  font-style: normal;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  display: block;
+  overflow-x: auto;
+}
+.prose th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-fg);
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  white-space: nowrap;
+}
+.prose td {
+  border-bottom: 1px solid var(--color-line-soft);
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  vertical-align: top;
+}
+.prose tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.prose hr {
+  border: 0;
+  border-top: 1px solid var(--color-line-soft);
+  margin: 2rem 0;
+}
+
+.prose img {
+  max-width: 100%;
+  border-radius: 0.6rem;
+  border: 1px solid var(--color-line);
+}
+
+/* ---------------------------------------------------------------------------
+   Callouts, written in Markdown as a blockquote whose first line is `[!note]`.
+   The renderer turns those into these.
+--------------------------------------------------------------------------- */
+.callout {
+  border: 1px solid var(--color-line);
+  border-left-width: 3px;
+  border-radius: 0.6rem;
+  padding: 0.75rem 1rem;
+  background: rgb(255 255 255 / 0.015);
+}
+.callout > p:first-child {
+  margin-top: 0;
+}
+.callout > * + * {
+  margin-top: 0.5rem;
+}
+.callout-title {
+  color: var(--color-fg);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+}
+.callout-note {
+  border-left-color: var(--color-info);
+}
+.callout-note .callout-title {
+  color: var(--color-info);
+}
+.callout-warning {
+  border-left-color: var(--color-warn);
+}
+.callout-warning .callout-title {
+  color: var(--color-warn);
+}
+.callout-danger {
+  border-left-color: var(--color-crit);
+}
+.callout-danger .callout-title {
+  color: var(--color-crit);
+}
+.callout-tip {
+  border-left-color: var(--color-low);
+}
+.callout-tip .callout-title {
+  color: var(--color-low);
+}

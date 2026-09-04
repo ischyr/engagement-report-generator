@@ -1,0 +1,32 @@
+# Normalise text files to LF in the repository, checkout native on each platform.
+* text=auto
+
+# Except the shell scripts, which run inside a Linux container whatever the host
+# checked them out as. A CRLF line ending in a shebang makes the kernel look for an
+# interpreter called `/bin/sh\r`, and the error names a file that plainly exists.
+*.sh text eol=lf
+
+# Word documents are zip archives. Any end-of-line conversion corrupts them, so
+# mark them binary explicitly rather than relying on content sniffing.
+*.docx binary
+*.doc  binary
+*.xlsx binary
+*.pdf  binary
+
+# Images
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+
+# Fonts
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+
+# Keep the lockfile out of diffs — it is generated, and reviewing it line by line
+# is noise. It is still committed, which is what matters for reproducible installs.
+package-lock.json -diff linguist-generated
