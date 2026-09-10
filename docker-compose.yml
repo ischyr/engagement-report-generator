@@ -1,0 +1,87 @@
+# ---------------------------------------------------------------------------
+# Engy Report, whole, in two containers.
+#
+#   docker compose up -d --build     start it
+#   open http://localhost:4000       the app  (admin / Admin123!)
+#   open http://localhost:4100       the docs
+#   docker compose logs -f app       what it is doing
+#   docker compose down              stop it, keep the data
+#   docker compose down -v           stop it and throw the data away
+#
+# No `version:` key — Compose v2 ignores it and warns about it.
+# ---------------------------------------------------------------------------
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # Not published. The app reaches it over the compose network by name, and a
+    # database on a laptop's 27017 would collide with a Mongo already installed
+    # there — which is exactly the setup this is meant not to disturb. Uncomment
+    # to point Compass at it.
+    # ports:
+    #   - '27018:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # `ping` rather than a port check: the port opens well before the server
+      # will accept a query, and the app treats a refused query as fatal.
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        # Not `service_started`. Mongo takes a few seconds to become answerable on
+        # a first run, and the API gives up rather than retrying.
+        condition: service_healthy
+    ports:
+      - '4000:4000'
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      MONGODB_URI: mongodb://mongo:27017/engy-report
+      # The API serves the built app itself, so the browser is already on the same
+      # origin and this is only here for anyone pointing a separate dev client at it.
+      CORS_ORIGIN: http://localhost:4000
+      # Left unset on purpose. The entrypoint generates a set on first boot and keeps
+      # them in the storage volume, so this file has no secrets in it to leak and no
+      # `dev-only-...` default reaches production. Set them here (or in a .env beside
+      # this file) to supply your own:
+      #   JWT_ACCESS_SECRET / JWT_REFRESH_SECRET / VAULT_KEY
+      #
+      # The bootstrap account. Change the password here before the first `up` if this
+      # will be reachable by anyone else — after that, change it in the app.
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin123!}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@engy.local}
+      # Once the accounts exist, set this to false and nobody can sign themselves up.
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+    volumes:
+      # Uploaded templates, render scratch space, and the generated secrets. A named
+      # volume rather than a bind mount so it works the same on macOS, where bind
+      # mounts are both slower and a source of permission surprises.
+      - app-storage:/app/server/storage
+
+  docs:
+    # The manual: the same build, served by nginx on its own port. Static files, no
+    # database, nothing to configure. Drop this whole service if you don't want it —
+    # nothing else refers to it.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: docs
+    restart: unless-stopped
+    ports:
+      - '4100:80'
+
+volumes:
+  mongo-data:
+  app-storage:

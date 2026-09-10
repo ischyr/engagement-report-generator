@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Engy Generator">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6d80f5"/>
+      <stop offset="1" stop-color="#4150bd"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="url(#g)"/>
+  <g fill="#ffffff">
+    <rect x="30.0" y="26.0" width="12.0" height="48.0" rx="1.5"/>
+    <rect x="30.0" y="26.0" width="40.0" height="12.0" rx="1.5"/>
+    <rect x="30.0" y="44.0" width="34.0" height="12.0" rx="1.5"/>
+    <rect x="30.0" y="62.0" width="40.0" height="12.0" rx="1.5"/>
+  </g>
+</svg>

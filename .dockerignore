@@ -1,0 +1,38 @@
+# What never belongs in the build context.
+#
+# Everything here is either rebuilt inside the image, secret, or large enough that
+# shipping it to the daemon is the slowest part of `docker compose build`.
+
+# Installed inside the image, for the image's own platform. A node_modules built on
+# a Mac and copied into a Linux container brings the wrong native binaries with it.
+node_modules
+*/node_modules
+
+# Built inside the image.
+client/dist
+docs/dist
+server/public
+
+# Secrets, and the local configuration this replaces.
+.env
+.env.*
+!.env.example
+
+# Local history and tooling.
+.git
+.github
+.vscode
+.idea
+
+# Uploaded templates and render scratch space: a volume, not image content. Somebody
+# else's client reports are the last thing that should be baked into a shared image.
+server/storage/templates/*
+server/storage/tmp/*
+!server/storage/**/.gitkeep
+
+# Noise.
+npm-debug.log*
+*.log
+.DS_Store
+Thumbs.db
+coverage
