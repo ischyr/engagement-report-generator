@@ -152,7 +152,16 @@ function Brand({ onNavigate }) {
         </span>
       )}
       <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold leading-tight text-fg">{appName}</span>
+        {/*
+          Two lines rather than an ellipsis.
+
+          `truncate` was right while the default name was two short words, and it quietly stopped
+          being right when the instance name grew: a 240px sidebar renders "Engy • Report
+          Generati…", which is worse than either the full name or a shorter one. `line-clamp-2`
+          wraps instead, still bounded so that a name somebody has set to a paragraph cannot push
+          the navigation down the page.
+        */}
+        <span className="line-clamp-2 text-sm font-semibold leading-tight text-fg">{appName}</span>
         {tagline ? (
           <span className="block truncate text-[0.625rem] uppercase tracking-wider text-fg-subtle">
             {tagline}

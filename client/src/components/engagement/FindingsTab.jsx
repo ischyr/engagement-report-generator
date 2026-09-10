@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   BookOpen,
@@ -1445,6 +1445,313 @@ function FindingAuthor({ finding }) {
 }
 
 /**
+ * One shared empty array for "reported nowhere before".
+ *
+ * `?? []` per row per render is a fresh array every time, and a fresh array is a changed prop: it
+ * would defeat the memo on the row below for every finding that has no history, which is most of
+ * them. The one thing a shared empty array must never be is mutated, and nothing does.
+ */
+const NO_REPEATS = [];
+
+/**
+ * A finding nobody has written up yet.
+ *
+ * Derived rather than stored: a flag would need setting, unsetting and migrating, and
+ * "no description, still on the default vector" is the same thing the preflight check
+ * already complains about — so the two can never disagree.
+ */
+const isDraft = (finding) =>
+  /*
+    `hasDescription` is computed by the server with the same rule `isHtmlEmpty` applies here —
+    and one it cannot: a proof of concept that is a single screenshot has no text in it, and
+    calling that finding empty would tell somebody their evidence is missing.
+  */
+  !(finding.hasDescription ?? !isHtmlEmpty(finding.description)) &&
+  (finding._cvss?.baseScore ?? 0) === 0;
+
+/** Whose write-up this is, against the id of whoever is looking. */
+const assigneeId = (finding) => String(finding.assignedTo?._id ?? finding.assignedTo ?? '');
+
+/**
+ * One row of the findings list, and the reason it is its own component.
+ *
+ * This was two hundred lines of JSX inside `findings.map`, which meant every one of them was
+ * rebuilt whenever anything in the tab re-rendered — and the tab re-renders on every keystroke in
+ * the quick-capture box above the list, on every step of the `j`/`k` walk, and on every tick of a
+ * filter. Forty findings, each with its severity computation, its badges, its avatar and a
+ * team-sized `<select>`, rebuilt to show one more character in a text input.
+ *
+ * So: `memo`, and every prop chosen to be stable. The booleans are computed by the parent rather
+ * than derived from a shared object here — passing `selectedIds` and letting each row call
+ * `.includes` would be an array whose identity changes on every tick, and would make this memo
+ * decorative. The callbacks are `useCallback`ed up there for the same reason, and the row hands
+ * its own index back to them so it does not need a closure per finding.
+ *
+ * What is left is the property worth having: ticking a box, moving the cursor or typing a title
+ * re-renders the one or two rows whose props actually changed.
+ */
+const FindingRow = memo(function FindingRow({
+  finding,
+  index,
+  number,
+  selected,
+  atCursor,
+  editable,
+  reorderable,
+  isLast,
+  reordering,
+  team,
+  mine,
+  busy,
+  repeats,
+  onSelect,
+  onToggle,
+  onMove,
+  onAssign,
+  onDelete,
+}) {
+  const node = useRef(null);
+
+  /*
+   * The cursor scrolls itself into view.
+   *
+   * A `ref` callback on the row did this before, which meant re-running on every render that
+   * happened to leave the cursor here — and a new callback identity on every render besides. An
+   * effect on the one thing that matters runs when the cursor arrives, and not otherwise.
+   */
+  useEffect(() => {
+    if (atCursor) node.current?.scrollIntoView({ block: 'nearest' });
+  }, [atCursor]);
+
+  const draft = isDraft(finding);
+  const assignee = assigneeId(finding);
+
+  return (
+    <li
+      ref={node}
+      className={cn(
+        'group flex items-center gap-3 px-4 py-3',
+        selected && 'bg-brand-500/[0.07]',
+        /* The cursor, as a rail down the left edge: visible without moving anything. */
+        atCursor && 'bg-white/[0.04] shadow-[inset_2px_0_0_0_var(--color-brand-500)]'
+      )}
+    >
+      {/*
+        One click ticks, shift-click takes the run. Its own control rather than making the
+        row do both, because the row opens the finding and a list where clicking sometimes
+        opens and sometimes selects is a list people stop trusting.
+      */}
+      {editable ? (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onToggle(finding._id, index, event.nativeEvent.shiftKey)}
+          onClick={(event) => event.stopPropagation()}
+          aria-label={`Select ${finding.title}`}
+          className="size-3.5 shrink-0 cursor-pointer accent-brand-500"
+        />
+      ) : null}
+      {reorderable ? (
+        <div className="flex shrink-0 flex-col">
+          <button
+            type="button"
+            disabled={index === 0 || reordering}
+            onClick={() => onMove(index, -1)}
+            aria-label="Move up"
+            className="rounded p-0.5 text-fg-subtle transition hover:bg-white/5 hover:text-fg disabled:opacity-25"
+          >
+            <ChevronUp size={13} />
+          </button>
+          <button
+            type="button"
+            disabled={isLast || reordering}
+            onClick={() => onMove(index, 1)}
+            aria-label="Move down"
+            className="rounded p-0.5 text-fg-subtle transition hover:bg-white/5 hover:text-fg disabled:opacity-25"
+          >
+            <ChevronDown size={13} />
+          </button>
+        </div>
+      ) : (
+        <span className="w-6 shrink-0 text-center font-mono text-xs text-fg-subtle">{number}</span>
+      )}
+
+      <button
+        type="button"
+        onClick={() => onSelect(finding._id)}
+        className="min-w-0 flex-1 text-left"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium text-fg group-hover:text-brand-300">
+            {finding.title}
+          </span>
+          {/*
+            The severity the team is standing behind, which is not always the vector's.
+            The list used to show the score's own rating and nothing else, so an override
+            — the whole point of which is that it is what gets reported — was invisible
+            until somebody opened the finding. The score stays visible beside it, because
+            an override without the number it departs from is the half of the story a
+            client disputes.
+          */}
+          <SeverityBadge
+            severity={finding.severityOverride || finding._cvss.baseSeverity}
+            score={finding._cvss.baseScore}
+          />
+          {finding.severityOverride && finding.severityOverride !== finding._cvss.baseSeverity ? (
+            <span
+              title={
+                finding.severityOverrideReason ||
+                `Reported as ${finding.severityOverride}, scored ${finding._cvss.baseSeverity}`
+              }
+              className="text-[0.625rem] text-fg-subtle"
+            >
+              scored {finding._cvss.baseSeverity}
+            </span>
+          ) : null}
+          {/* Visible before you open it, so "taken" is something you can see rather
+              than something you discover after reading the whole write-up. */}
+          {finding.lockedBy ? (
+            <span
+              title={`Locked by ${displayName(finding.lockedBy)}`}
+              className="flex items-center gap-1 rounded-full bg-crit/12 px-1.5 py-0.5 text-[0.625rem] text-crit"
+            >
+              <Lock size={10} />
+              {displayName(finding.lockedBy).split(' ')[0]}
+            </span>
+          ) : null}
+          {finding.priority ? (
+            <span className="text-[0.6875rem] text-fg-subtle">
+              {PRIORITY_LABELS[finding.priority]} priority
+            </span>
+          ) : null}
+          {draft ? (
+            <Badge
+              tone="neutral"
+              title="No description and an unscored vector — still a note to yourself"
+            >
+              draft
+            </Badge>
+          ) : null}
+          {repeats.length ? (
+            <Badge
+              tone="warning"
+              icon={Repeat2}
+              title={`Reported before in ${repeats
+                .map((o) => o.reference || o.auditName)
+                .join(', ')}`}
+            >
+              reported before
+            </Badge>
+          ) : null}
+          {/*
+            The client's word, not ours.
+            A status set through a client link and one set by somebody who retested it
+            are the same value and very different facts. This is the only thing on the
+            screen that tells them apart, so it stays until a person moves the status
+            themselves — at which point the server clears the claim.
+          */}
+          {finding.clientClaim?.status ? (
+            <Badge
+              tone="info"
+              icon={UserCheck}
+              title={`${finding.clientClaim.by || 'The client'} said this on ${formatDate(
+                finding.clientClaim.at
+              )}. Nobody has verified it yet.`}
+            >
+              client says {finding.clientClaim.status === 'fixed' ? 'fixed' : 'open'}
+            </Badge>
+          ) : null}
+
+          {/*
+            On the badge row rather than the line below it: that line is the category and
+            the first sentence of the write-up, and chips in the middle of a sentence read
+            as part of it. Three, then a count — a finding with eight tags is a filing
+            decision, not a headline.
+          */}
+          {(finding.tags ?? []).slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="shrink-0 rounded-md bg-brand-500/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-brand-300/90"
+            >
+              {tag}
+            </span>
+          ))}
+          {(finding.tags ?? []).length > 3 ? (
+            <span
+              title={(finding.tags ?? []).join(', ')}
+              className="shrink-0 text-[0.625rem] text-fg-subtle"
+            >
+              +{(finding.tags ?? []).length - 3}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 truncate text-xs text-fg-muted">
+          {[finding.category, finding.vulnType].filter(Boolean).join(' · ')}
+          {/*
+            The snippet comes from the server now. The list never needed the description,
+            only the first line of it, and asking for the whole thing to show 110
+            characters is what made an engagement weigh megabytes.
+          */}
+          {finding.snippet
+            ? `${finding.category || finding.vulnType ? ' — ' : ''}${finding.snippet.slice(0, 110)}`
+            : ''}
+        </p>
+      </button>
+
+      <FindingAuthor finding={finding} />
+
+      {/*
+        Whose it is.
+        The same control the checklist uses, for the same reason: quiet until it has an
+        answer, and absent altogether on a one-person engagement, so a row of dropdowns
+        never makes the exception look like the rule.
+      */}
+      {editable && team.length > 1 ? (
+        <select
+          value={assignee}
+          disabled={busy}
+          title="Whose write-up this is"
+          onChange={(event) => onAssign(finding, event.target.value)}
+          className={cn(
+            'h-6 w-24 shrink-0 rounded bg-canvas/60 px-1 text-[0.625rem] ring-1 ring-line-soft focus:ring-2 focus:ring-brand-500 focus:outline-none disabled:opacity-40',
+            finding.assignedTo
+              ? assignee === mine
+                ? 'text-brand-300'
+                : 'text-fg'
+              : 'text-fg-subtle opacity-50 hover:opacity-100'
+          )}
+        >
+          <option value="">nobody</option>
+          {team.map((member) => (
+            <option key={member._id} value={member._id}>
+              {displayName(member)}
+            </option>
+          ))}
+        </select>
+      ) : finding.assignedTo ? (
+        <span
+          title={`${displayName(finding.assignedTo)}'s to write`}
+          className="hidden shrink-0 text-[0.625rem] text-fg-subtle sm:block"
+        >
+          {displayName(finding.assignedTo).split(' ')[0]}&rsquo;s
+        </span>
+      ) : null}
+
+      {editable ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          icon={Trash2}
+          title="Delete finding"
+          className="shrink-0 hover:text-crit"
+          onClick={() => onDelete(finding)}
+        />
+      ) : null}
+    </li>
+  );
+});
+
+/**
  * The three trackers, and what each import actually needs from the person doing it.
  *
  * Said here rather than left to be discovered: the difference between the three files is which
@@ -1487,7 +1794,25 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
    * does what a reader expects.
    */
   const { findingId: selectedId } = useParams();
-  const select = (id) => guard(() => navigate(`/engagements/${audit._id}/findings/${id}`));
+  /* Declared before `select`, which now closes over it in a `useCallback` — a dependency array is
+     evaluated as the component renders, so reading `guard` from below here would be a TDZ throw
+     rather than the hoisting the old plain arrow got away with. */
+  const { guard } = useUnsaved();
+  /**
+   * `guard` through a ref, so `select` has one identity for the life of the tab.
+   *
+   * The same trick `UnsavedContext` uses on an editor's `save`, and for a related reason: `guard`
+   * is stable while the provider is mounted, and is a brand new object on every render when it is
+   * not — `useUnsaved()` falls back to a fresh literal. `select` is a prop on every row, so
+   * depending on that identity would mean the whole list re-rendering on every keystroke anywhere
+   * in the tab, in exactly the arrangement that is hardest to notice: correct, just slow again.
+   */
+  const guardRef = useRef(guard);
+  guardRef.current = guard;
+  const select = useCallback(
+    (id) => guardRef.current(() => navigate(`/engagements/${audit._id}/findings/${id}`)),
+    [navigate, audit._id]
+  );
 
   const [creating, setCreating] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -1498,7 +1823,6 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
   const [pendingPurge, setPendingPurge] = useState(null);
   const [purging, setPurging] = useState(false);
   const [reordering, setReordering] = useState(false);
-  const { guard } = useUnsaved();
   /** The quick-capture line: a title, and the category to reuse for the next one. */
   const [quick, setQuick] = useState('');
   const [capturing, setCapturing] = useState(false);
@@ -1509,7 +1833,15 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
    * selection held by position would silently follow the sort onto different findings.
    */
   const [picked, setPicked] = useState([]);
-  const [anchor, setAnchor] = useState(null);
+  /*
+   * A ref, not state.
+   *
+   * The anchor is never rendered — it is read once, inside `toggle`, to work out where a
+   * shift-click's run starts. As state it re-rendered the whole tab on every single tick of a
+   * checkbox purely to remember a number nothing displays, and it changed the identity of
+   * `toggle`, which would have made the memo on the rows worthless.
+   */
+  const anchor = useRef(null);
   /** Which finding's assignee is being changed, so its control can go quiet while it saves. */
   const [assigning, setAssigning] = useState('');
   /** Whether the list is showing only what is mine. Off by default; see the toggle. */
@@ -1543,23 +1875,12 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
   const history = useResource(`/audits/${audit._id}/history`, { initial: null });
   /** Deleted findings that can still be put back. Usually empty, so it is cheap. */
   const deleted = useResource(`/audits/${audit._id}/findings/deleted`, { initial: [] });
-  const repeatsOf = (findingId) => history.data?.byFinding?.[findingId] ?? [];
-
-  /**
-   * A finding nobody has written up yet.
-   *
-   * Derived rather than stored: a flag would need setting, unsetting and migrating, and
-   * "no description, still on the default vector" is the same thing the preflight check
-   * already complains about — so the two can never disagree.
-   */
-  const isDraft = (finding) =>
-    /*
-      `hasDescription` is computed by the server with the same rule `isHtmlEmpty` applies here —
-      and one it cannot: a proof of concept that is a single screenshot has no text in it, and
-      calling that finding empty would tell somebody their evidence is missing.
-    */
-    !(finding.hasDescription ?? !isHtmlEmpty(finding.description)) &&
-    (finding._cvss?.baseScore ?? 0) === 0;
+  /* `NO_REPEATS` rather than a fresh `[]`: see the note on it. */
+  const byFinding = history.data?.byFinding;
+  const repeatsOf = useCallback(
+    (findingId) => byFinding?.[findingId] ?? NO_REPEATS,
+    [byFinding]
+  );
 
   /**
    * Hands one finding to somebody, or to nobody.
@@ -1568,23 +1889,25 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
    * handover, tells the person, and refuses a finding somebody else is holding, and a second
    * route doing the same thing slightly differently is how the two would drift.
    */
-  const assign = async (finding, userId) => {
-    setAssigning(finding._id);
-    try {
-      await api.put(`/audits/${audit._id}/findings/${finding._id}`, {
-        assignedTo: userId || null,
-      });
-      await onReload?.({ quiet: true });
-    } catch (error) {
-      toast.fromError(error);
-    } finally {
-      setAssigning('');
-    }
-  };
+  const assign = useCallback(
+    async (finding, userId) => {
+      setAssigning(finding._id);
+      try {
+        await api.put(`/audits/${audit._id}/findings/${finding._id}`, {
+          assignedTo: userId || null,
+        });
+        await onReload?.({ quiet: true });
+      } catch (error) {
+        toast.fromError(error);
+      } finally {
+        setAssigning('');
+      }
+    },
+    [audit._id, onReload, toast]
+  );
 
   /* `user?.id` is what the account endpoint sends; the fallback is for a raw user row. */
   const mine = String(user?.id ?? user?._id ?? '');
-  const isMine = (finding) => String(finding.assignedTo?._id ?? finding.assignedTo ?? '') === mine;
   const anyAssigned = (audit.findings ?? []).some((finding) => finding.assignedTo);
 
   const findings = useMemo(() => {
@@ -1693,18 +2016,33 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
    * "every Medium", and after a sort by score they are contiguous. Anything that has since left
    * the list is dropped on every render below rather than tracked here.
    */
-  const toggle = (id, index, shiftKey) => {
-    setPicked((current) => {
-      if (shiftKey && anchor !== null) {
-        const from = Math.min(anchor, index);
-        const to = Math.max(anchor, index);
-        const span = findings.slice(from, to + 1).map((finding) => finding._id);
-        return [...new Set([...current, ...span])];
-      }
-      return current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
-    });
-    setAnchor(index);
-  };
+  const toggle = useCallback(
+    (id, index, shiftKey) => {
+      /*
+       * Read out of the ref *before* the updater, and before it is moved.
+       *
+       * A `setPicked(fn)` updater does not run when it is called — it runs during the re-render,
+       * by which time the `anchor.current = index` below has already happened. As state this was
+       * safe by accident: the old code read a value captured in the render closure, so the line
+       * after `setPicked` could not affect it. Read from a ref inside the updater it saw the new
+       * anchor instead of the old one, `from` and `to` were both the row just clicked, and
+       * shift-click silently ticked one finding rather than the run. Which is what the suite
+       * caught, and the reason it clicks two boxes rather than trusting the refactor.
+       */
+      const from = anchor.current;
+      anchor.current = index;
+      setPicked((current) => {
+        if (shiftKey && from !== null) {
+          const span = findings
+            .slice(Math.min(from, index), Math.max(from, index) + 1)
+            .map((finding) => finding._id);
+          return [...new Set([...current, ...span])];
+        }
+        return current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
+      });
+    },
+    [findings]
+  );
 
   /*
    * The selection, minus anything that is no longer here.
@@ -1712,11 +2050,16 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
    * A batch move takes findings off this engagement and the poll brings back a shorter list, so a
    * stale id would be sent to the next action and skipped as "missing" — technically handled, but
    * it would say something confusing about a finding nobody can see.
+   *
+   * Through a `Set`, because both halves of this were quadratic. `picked.filter(... findings.some)`
+   * walked the whole list once per ticked finding, and every row then asked
+   * `selectedIds.includes(...)` — so ticking the fortieth box on a forty-finding engagement did
+   * some three thousand comparisons to draw the same forty checkboxes. Two sets, and a row is
+   * handed the answer as a boolean rather than an array to go looking through.
    */
-  const selectedIds = useMemo(
-    () => picked.filter((id) => findings.some((finding) => finding._id === id)),
-    [picked, findings]
-  );
+  const present = useMemo(() => new Set(findings.map((finding) => finding._id)), [findings]);
+  const selectedIds = useMemo(() => picked.filter((id) => present.has(id)), [picked, present]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allPicked = findings.length > 0 && selectedIds.length === findings.length;
 
   const closeEditor = () => {
@@ -1885,21 +2228,24 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
   };
 
   /** Manual reordering switches the engagement off automatic CVSS sorting. */
-  const move = async (index, direction) => {
-    const next = [...findings];
-    const target = index + direction;
-    if (target < 0 || target >= next.length) return;
-    [next[index], next[target]] = [next[target], next[index]];
-    setReordering(true);
-    try {
-      await api.put(`/audits/${audit._id}/findings-order`, { order: next.map((f) => f._id) });
-      await onReload({ quiet: true });
-    } catch (error) {
-      toast.fromError(error);
-    } finally {
-      setReordering(false);
-    }
-  };
+  const move = useCallback(
+    async (index, direction) => {
+      const next = [...findings];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return;
+      [next[index], next[target]] = [next[target], next[index]];
+      setReordering(true);
+      try {
+        await api.put(`/audits/${audit._id}/findings-order`, { order: next.map((f) => f._id) });
+        await onReload({ quiet: true });
+      } catch (error) {
+        toast.fromError(error);
+      } finally {
+        setReordering(false);
+      }
+    },
+    [findings, audit._id, onReload, toast]
+  );
 
   if (selected) {
     return (
@@ -2095,236 +2441,42 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
           />
         ) : (
           <ul className="divide-y divide-line-soft">
+            {/*
+              Every row stays in the page, deliberately.
+
+              `content-visibility: auto` on the off-screen rows was here for a while as the cheap
+              half of virtualising, and a real-browser A/B took it back out. Measured on a 65-row
+              list, against the same page with the deferral forced off: the laid-out page came to
+              4997px where the truth is 4917, every row from the twenty-seventh down sat at a
+              different offset, and `innerText` on a row the browser had skipped was the empty
+              string. Small numbers, but this is a list people click precisely and scroll while
+              reading, and the memoisation above is where the cost actually was. If an engagement
+              ever holds hundreds of findings, the honest answer is real windowing and the
+              decisions it forces about find-in-page and printing — not a CSS approximation that
+              moves the rows.
+            */}
             {findings.map((finding, index) => (
-              <li
+              <FindingRow
                 key={finding._id}
-                ref={
-                  index === cursor
-                    ? (node) => node?.scrollIntoView({ block: 'nearest' })
-                    : undefined
-                }
-                className={cn(
-                  'group flex items-center gap-3 px-4 py-3',
-                  selectedIds.includes(finding._id) && 'bg-brand-500/[0.07]',
-                  /* The cursor, as a rail down the left edge: visible without moving anything. */
-                  index === cursor && 'bg-white/[0.04] shadow-[inset_2px_0_0_0_var(--color-brand-500)]'
-                )}
-              >
-                {/*
-                  One click ticks, shift-click takes the run. Its own control rather than making the
-                  row do both, because the row opens the finding and a list where clicking sometimes
-                  opens and sometimes selects is a list people stop trusting.
-                */}
-                {editable ? (
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(finding._id)}
-                    onChange={(event) => toggle(finding._id, index, event.nativeEvent.shiftKey)}
-                    onClick={(event) => event.stopPropagation()}
-                    aria-label={`Select ${finding.title}`}
-                    className="size-3.5 shrink-0 cursor-pointer accent-brand-500"
-                  />
-                ) : null}
-                {editable && audit.sortFindings === false ? (
-                  <div className="flex shrink-0 flex-col">
-                    <button
-                      type="button"
-                      disabled={index === 0 || reordering}
-                      onClick={() => move(index, -1)}
-                      aria-label="Move up"
-                      className="rounded p-0.5 text-fg-subtle transition hover:bg-white/5 hover:text-fg disabled:opacity-25"
-                    >
-                      <ChevronUp size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={index === findings.length - 1 || reordering}
-                      onClick={() => move(index, 1)}
-                      aria-label="Move down"
-                      className="rounded p-0.5 text-fg-subtle transition hover:bg-white/5 hover:text-fg disabled:opacity-25"
-                    >
-                      <ChevronDown size={13} />
-                    </button>
-                  </div>
-                ) : (
-                  <span className="w-6 shrink-0 text-center font-mono text-xs text-fg-subtle">
-                    {index + 1}
-                  </span>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => select(finding._id)}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate text-sm font-medium text-fg group-hover:text-brand-300">
-                      {finding.title}
-                    </span>
-                    {/*
-                      The severity the team is standing behind, which is not always the vector's.
-                      The list used to show the score's own rating and nothing else, so an override
-                      — the whole point of which is that it is what gets reported — was invisible
-                      until somebody opened the finding. The score stays visible beside it, because
-                      an override without the number it departs from is the half of the story a
-                      client disputes.
-                    */}
-                    <SeverityBadge
-                      severity={finding.severityOverride || finding._cvss.baseSeverity}
-                      score={finding._cvss.baseScore}
-                    />
-                    {finding.severityOverride &&
-                    finding.severityOverride !== finding._cvss.baseSeverity ? (
-                      <span
-                        title={
-                          finding.severityOverrideReason ||
-                          `Reported as ${finding.severityOverride}, scored ${finding._cvss.baseSeverity}`
-                        }
-                        className="text-[0.625rem] text-fg-subtle"
-                      >
-                        scored {finding._cvss.baseSeverity}
-                      </span>
-                    ) : null}
-                    {/* Visible before you open it, so "taken" is something you can see rather
-                        than something you discover after reading the whole write-up. */}
-                    {finding.lockedBy ? (
-                      <span
-                        title={`Locked by ${displayName(finding.lockedBy)}`}
-                        className="flex items-center gap-1 rounded-full bg-crit/12 px-1.5 py-0.5 text-[0.625rem] text-crit"
-                      >
-                        <Lock size={10} />
-                        {displayName(finding.lockedBy).split(' ')[0]}
-                      </span>
-                    ) : null}
-                    {finding.priority ? (
-                      <span className="text-[0.6875rem] text-fg-subtle">
-                        {PRIORITY_LABELS[finding.priority]} priority
-                      </span>
-                    ) : null}
-                    {isDraft(finding) ? (
-                      <Badge
-                        tone="neutral"
-                        title="No description and an unscored vector — still a note to yourself"
-                      >
-                        draft
-                      </Badge>
-                    ) : null}
-                    {repeatsOf(finding._id).length ? (
-                      <Badge
-                        tone="warning"
-                        icon={Repeat2}
-                        title={`Reported before in ${repeatsOf(finding._id)
-                          .map((o) => o.reference || o.auditName)
-                          .join(', ')}`}
-                      >
-                        reported before
-                      </Badge>
-                    ) : null}
-                    {/*
-                      The client's word, not ours.
-                      A status set through a client link and one set by somebody who retested it
-                      are the same value and very different facts. This is the only thing on the
-                      screen that tells them apart, so it stays until a person moves the status
-                      themselves — at which point the server clears the claim.
-                    */}
-                    {finding.clientClaim?.status ? (
-                      <Badge
-                        tone="info"
-                        icon={UserCheck}
-                        title={`${finding.clientClaim.by || 'The client'} said this on ${formatDate(
-                          finding.clientClaim.at
-                        )}. Nobody has verified it yet.`}
-                      >
-                        client says {finding.clientClaim.status === 'fixed' ? 'fixed' : 'open'}
-                      </Badge>
-                    ) : null}
-
-                    {/*
-                      On the badge row rather than the line below it: that line is the category and
-                      the first sentence of the write-up, and chips in the middle of a sentence read
-                      as part of it. Three, then a count — a finding with eight tags is a filing
-                      decision, not a headline.
-                    */}
-                    {(finding.tags ?? []).slice(0, 3).map((tag) => (
-                      <span
-                        key={tag}
-                        className="shrink-0 rounded-md bg-brand-500/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-brand-300/90"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                    {(finding.tags ?? []).length > 3 ? (
-                      <span
-                        title={(finding.tags ?? []).join(', ')}
-                        className="shrink-0 text-[0.625rem] text-fg-subtle"
-                      >
-                        +{(finding.tags ?? []).length - 3}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-0.5 truncate text-xs text-fg-muted">
-                    {[finding.category, finding.vulnType].filter(Boolean).join(' · ')}
-                    {/*
-                      The snippet comes from the server now. The list never needed the description,
-                      only the first line of it, and asking for the whole thing to show 110
-                      characters is what made an engagement weigh megabytes.
-                    */}
-                    {finding.snippet
-                      ? `${finding.category || finding.vulnType ? ' — ' : ''}${finding.snippet.slice(0, 110)}`
-                      : ''}
-                  </p>
-                </button>
-
-                <FindingAuthor finding={finding} />
-
-                {/*
-                  Whose it is.
-                  The same control the checklist uses, for the same reason: quiet until it has an
-                  answer, and absent altogether on a one-person engagement, so a row of dropdowns
-                  never makes the exception look like the rule.
-                */}
-                {editable && team.length > 1 ? (
-                  <select
-                    value={String(finding.assignedTo?._id ?? finding.assignedTo ?? '')}
-                    disabled={assigning === finding._id}
-                    title="Whose write-up this is"
-                    onChange={(event) => assign(finding, event.target.value)}
-                    className={cn(
-                      'h-6 w-24 shrink-0 rounded bg-canvas/60 px-1 text-[0.625rem] ring-1 ring-line-soft focus:ring-2 focus:ring-brand-500 focus:outline-none disabled:opacity-40',
-                      finding.assignedTo
-                        ? isMine(finding)
-                          ? 'text-brand-300'
-                          : 'text-fg'
-                        : 'text-fg-subtle opacity-50 hover:opacity-100'
-                    )}
-                  >
-                    <option value="">nobody</option>
-                    {team.map((member) => (
-                      <option key={member._id} value={member._id}>
-                        {displayName(member)}
-                      </option>
-                    ))}
-                  </select>
-                ) : finding.assignedTo ? (
-                  <span
-                    title={`${displayName(finding.assignedTo)}'s to write`}
-                    className="hidden shrink-0 text-[0.625rem] text-fg-subtle sm:block"
-                  >
-                    {displayName(finding.assignedTo).split(' ')[0]}&rsquo;s
-                  </span>
-                ) : null}
-
-                {editable ? (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    icon={Trash2}
-                    title="Delete finding"
-                    className="shrink-0 hover:text-crit"
-                    onClick={() => setPendingDelete(finding)}
-                  />
-                ) : null}
-              </li>
+                finding={finding}
+                index={index}
+                number={index + 1}
+                selected={selectedSet.has(finding._id)}
+                atCursor={index === cursor}
+                editable={editable}
+                reorderable={editable && audit.sortFindings === false}
+                isLast={index === findings.length - 1}
+                reordering={reordering}
+                team={team}
+                mine={mine}
+                busy={assigning === finding._id}
+                repeats={repeatsOf(finding._id)}
+                onSelect={select}
+                onToggle={toggle}
+                onMove={move}
+                onAssign={assign}
+                onDelete={setPendingDelete}
+              />
             ))}
           </ul>
         )}
@@ -2340,7 +2492,7 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
           ids={selectedIds}
           onClear={() => {
             setPicked([]);
-            setAnchor(null);
+            anchor.current = null;
           }}
           onDone={() => onReload({ quiet: true })}
         />

@@ -8,7 +8,7 @@ Three things, in order of how much they matter.
    every start, and anybody who knows them can mint a token for any account.
 2. **Set `VAULT_KEY`, and back it up somewhere else.** Without it the credential vault stays off.
    With it, and no backup, the credentials encrypted under it are unrecoverable.
-3. **Run the suites.** They take a couple of minutes between them; the first six want a real
+3. **Run the suites.** They take a couple of minutes between them; the first seven want a real
    database.
 
 ```bash
@@ -17,6 +17,7 @@ npm run test:collab   # the app's own routes end to end, as several people at on
 npm run test:api      # the versioned API: which credential, which scope, which fields
 npm run test:live     # one heartbeat carries the roster and the notifications
 npm run test:projection # a tab that reads less still answers with everything, and still refuses
+npm run test:search   # the search filters in Mongo now, and still finds every result it did
 npm run test:media    # evidence, storage, the render cache
 npm run test:charts   # the report charts, drawn and delivered
 npm run test:mail     # the message format and the SMTP conversation
@@ -24,6 +25,7 @@ npm run test:images   # the rules that scale a screenshot
 npm run test:keys     # what counts as a save keystroke
 npm run test:import   # reading a findings spreadsheet
 npm run test:figures  # captioning and reordering evidence
+npm run test:findings-rows # typing beside sixty findings re-renders none of them
 npm run smoke         # renders a report, renders every page, checks contrast
 ```
 
@@ -221,6 +223,30 @@ npm run make:api-token -- --help                     # and the other direction
   per-tab endpoints now name what they need: on the largest engagement this was measured against,
   that is 99% less read for the eleven that only needed the id, and 59–68% less for the ones that
   read one array.
+- **The search filters in the database.** One search box covers engagements, findings, sections,
+  notes, library entries and clients — and to answer it, the endpoint used to load every
+  engagement the searcher could see, whole `findings`, `sections` and `notes` arrays, and then
+  run an HTML parser over every prose field of every one of them. A firm with two hundred
+  engagements read and parsed everything it had ever written to answer `xss`, on every query.
+  Mongo is now asked which engagements contain the needle first, and only those are scored: on a
+  43-engagement corpus that is 4 MB of prose and about 250 ms of server work replaced by one
+  document read. It is still a collection scan — a case-insensitive substring cannot use an index,
+  and a text index would tokenise, so `cros` would stop finding cross-site scripting and
+  `api-staging.acme.example` would stop being one word — but the scan happens inside the storage
+  engine rather than in Node. `npm run test:search` compares the results against what the
+  unfiltered version returned, needle by needle, because a filter that loses a result looks exactly
+  like a result that was never there.
+- **A findings list re-renders the row you touched.** The rows were two hundred lines of markup
+  inside a loop, so all of them were rebuilt whenever anything on the tab re-rendered — every
+  keystroke in the quick-capture box, every step of the `j`/`k` walk, every tick of a checkbox.
+  Sixty findings, each with a severity computation, an avatar and a team-sized dropdown, rebuilt to
+  put one more character in a text input. The row is its own memoised component now, and
+  `npm run test:findings-rows` counts: typing renders no rows at all, moving the cursor renders
+  the two that changed, ticking a box renders one. Every row stays in the page — nothing is
+  windowed or deferred, so find-in-page, printing and the keyboard walk are unaffected. A
+  `content-visibility` deferral for the off-screen rows was tried and taken back out: measured in
+  a real browser against the same page without it, a 65-row list laid out 80px taller than its
+  true height and every row from the twenty-seventh down sat at a different offset.
 - **Indexes are not created automatically in production.** `autoIndex` is on in development and off
   when `NODE_ENV=production`, which is the right default — building an index on a large collection
   at boot is not something to discover during a deployment — but it means a fresh production

@@ -16,6 +16,7 @@ import { Banknote } from 'lucide-react';
 
 import { api } from '../lib/api.js';
 import { useToast } from '../context/ToastContext.jsx';
+import { useCapabilities } from '../context/CapabilitiesContext.jsx';
 import { useUnsavedWork } from '../context/UnsavedContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { formatDateTime } from '../lib/utils.js';
@@ -237,6 +238,8 @@ export function formFor(data) {
 
 export default function SettingsPage() {
   const toast = useToast();
+  /* Saving here can make a control appear elsewhere; see `save` below. */
+  const capabilities = useCapabilities();
   const { data, error, loading, reload, setData } = useResource('/settings');
 
   const [form, setForm] = useState(null);
@@ -286,6 +289,17 @@ export default function SettingsPage() {
       const updated = await api.put('/settings', form);
       setData(updated);
       setSavedAt(Date.now());
+      /*
+       * And tell the rest of the app, because some of what is on this page decides whether a
+       * control exists elsewhere.
+       *
+       * `CapabilitiesProvider` reads `/settings` once, when it mounts — which it does inside the
+       * auth gate, so it stays mounted for the whole session. Switching the PDF converter on used
+       * to leave the Render button on the engagement hidden until somebody reloaded the page: the
+       * setting had saved, the server agreed it was on, and the only copy of the answer that
+       * mattered was the one fetched at sign-in.
+       */
+      capabilities.reload();
       toast.success('Settings saved');
     } catch (err) {
       toast.fromError(err);

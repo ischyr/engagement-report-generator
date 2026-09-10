@@ -163,7 +163,7 @@ all it needs is navigate, type, click and screenshot, and Node has a WebSocket c
 
 ## Checking it works
 
-Sixteen suites — the first six want a real database, the rest do not:
+Eighteen suites — the first seven want a real database, the rest do not:
 
 ```bash
 npm run test:tags     # the template language and the OOXML it produces
@@ -171,6 +171,7 @@ npm run test:collab   # the app's own routes end to end, as several people at on
 npm run test:api      # the versioned API: which credential, which scope, which fields
 npm run test:live     # one heartbeat carries the roster and the notifications
 npm run test:projection # a tab that reads less still answers with everything, and still refuses
+npm run test:search   # the search filters in Mongo now, and still finds every result it did
 npm run test:media    # evidence, storage and the render cache
 npm run test:charts   # the report charts, drawn and delivered into a document
 npm run test:mail     # the message format and the SMTP conversation
@@ -181,6 +182,7 @@ npm run test:figures  # the surgery that captions and reorders evidence
 npm run test:assistant # what the optional assistant sends, and what it never does
 npm run test:chunks   # the first load stays small (needs npm run build first)
 npm run test:live-poll # the signed-in app still runs one timer, not four
+npm run test:findings-rows # typing beside a list of sixty findings re-renders none of them
 npm run smoke         # a rendered report, every page, the docs, WCAG contrast
 ```
 

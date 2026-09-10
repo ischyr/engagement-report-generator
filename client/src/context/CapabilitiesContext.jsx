@@ -15,19 +15,38 @@ import { useResource } from '../hooks/useResource.js';
  * every account is told, because every account can see the buttons it governs.
  */
 
-const CapabilitiesContext = createContext({ collab: false, pdf: false, loading: true });
+const CapabilitiesContext = createContext({
+  collab: false,
+  pdf: false,
+  loading: true,
+  reload: () => {},
+});
 
 export function CapabilitiesProvider({ children }) {
   /* One request, behind the auth gate, and no polling: a capability does not change hourly. */
-  const { data, loading } = useResource('/settings', { initial: null });
+  const { data, loading, reload } = useResource('/settings', { initial: null });
 
   const value = useMemo(
     () => ({
       collab: Boolean(data?.collab?.enabled),
       pdf: Boolean(data?.pdf?.enabled),
       loading,
+      /**
+       * Re-read them, for the moment one is switched on.
+       *
+       * "No polling" is right — a capability does not change hourly — but it does change at one
+       * predictable instant: when an administrator saves the Settings page. This provider mounts
+       * inside the auth gate and stays mounted for the whole session, so without this the answer
+       * fetched at sign-in is the answer for the rest of the session: enabling the PDF converter
+       * left the Render button hidden until somebody happened to reload the page, which is a
+       * feature that looks broken on the one screen that just turned it on.
+       *
+       * Called by the Settings page after a successful save. Not a subscription and not a poll —
+       * one request, at the one moment the answer is known to have changed.
+       */
+      reload,
     }),
-    [data?.collab?.enabled, data?.pdf?.enabled, loading]
+    [data?.collab?.enabled, data?.pdf?.enabled, loading, reload]
   );
 
   return <CapabilitiesContext.Provider value={value}>{children}</CapabilitiesContext.Provider>;

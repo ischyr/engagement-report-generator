@@ -2,7 +2,7 @@
   "name": "engy-report",
   "private": true,
   "version": "1.0.0",
-  "description": "Engy Report — a modular pentest engagement report generator driven by .docx templates",
+  "description": "Engy Report \u2014 a modular pentest engagement report generator driven by .docx templates",
   "type": "module",
   "workspaces": [
     "server",
@@ -78,7 +78,9 @@
     "test:chunks": "npm run test:chunks --workspace client",
     "test:live": "npm run test:live --workspace server",
     "test:live-poll": "npm run test:live-poll --workspace client",
-    "test:projection": "npm run test:projection --workspace server"
+    "test:projection": "npm run test:projection --workspace server",
+    "test:search": "npm run test:search --workspace server",
+    "test:findings-rows": "npm run test:findings-rows --workspace client"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

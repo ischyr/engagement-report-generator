@@ -54,7 +54,8 @@
     "make:api-token": "node src/scripts/make-api-token.js",
     "revoke:api-tokens": "node src/scripts/revoke-api-tokens.js",
     "test:live": "node src/scripts/live-test.js",
-    "test:projection": "node src/scripts/projection-test.js"
+    "test:projection": "node src/scripts/projection-test.js",
+    "test:search": "node src/scripts/search-test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

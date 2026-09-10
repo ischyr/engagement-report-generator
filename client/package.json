@@ -17,7 +17,8 @@
     "test:contrast": "node scripts/contrast-check.mjs",
     "test:intrusive-tab": "node scripts/intrusive-check.mjs",
     "test:chunks": "node scripts/chunks-check.mjs",
-    "test:live-poll": "node scripts/live-poll-check.mjs"
+    "test:live-poll": "node scripts/live-poll-check.mjs",
+    "test:findings-rows": "node scripts/findings-rows-check.mjs"
   },
   "dependencies": {
     "@tiptap/extension-collaboration": "^2.27.3",
