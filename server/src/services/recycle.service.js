@@ -26,6 +26,8 @@ import { EnumerationBody } from '../models/enumeration-body.model.js';
 import { KitItem } from '../models/kit-item.model.js';
 import { PhishingTarget } from '../models/phishing-target.model.js';
 import { ScopeChange } from '../models/scope-change.model.js';
+import { TimeEntry } from '../models/time-entry.model.js';
+import { Scratch } from '../models/scratch.model.js';
 import { badRequest, notFound } from '../utils/http-error.js';
 import { log } from '../utils/logger.js';
 
@@ -65,6 +67,22 @@ const intoCollection = (Model) => ({
     const id = entry.payload?._id;
     if (id && (await Model.exists({ _id: id }))) throw badRequest('It is already back.');
     await Model.create({ ...entry.payload, audit: audit._id });
+  },
+});
+
+/**
+ * A restorer for a record that belongs to a person, not to an engagement.
+ *
+ * No `audit` is touched — these go back exactly as they were, which for a scratchpad note means
+ * under its own id so a link to it still works. `scope: 'free'` is what sends it through
+ * `restoreOwned` and keeps `restore` from being handed one it cannot place.
+ */
+const intoOwnCollection = (Model) => ({
+  scope: 'free',
+  async restore(_audit, entry) {
+    const id = entry.payload?._id;
+    if (id && (await Model.exists({ _id: id }))) throw badRequest('It is already back.');
+    await Model.create(entry.payload);
   },
 });
 
@@ -134,6 +152,11 @@ export const RESTORERS = {
   handover: { noun: 'Handover note', ...intoList('handovers') },
   question: { noun: 'Question', ...intoList('questions') },
   'step-note': { noun: 'Output note', ...intoNested('enumeration', 'notes') },
+  /* Hours logged against an engagement: a row somebody deletes when they meant to edit it, and
+     until now the only way back was to remember what it said. */
+  'time-entry': { noun: 'Time entry', ...intoCollection(TimeEntry) },
+  /* And the first thing here that belongs to a person rather than to a job. */
+  scratch: { noun: 'Note', ...intoOwnCollection(Scratch) },
 };
 
 /**
@@ -145,14 +168,38 @@ export const RESTORERS = {
  *
  * @returns {Promise<{id: string, kind: string, noun: string, label: string}|null>}
  */
-export async function remember({ audit, kind, payload, label = '', index = null, parent = '', extra = null, actor = null }) {
+export async function remember({
+  audit = null,
+  owner = null,
+  kind,
+  payload,
+  label = '',
+  index = null,
+  parent = '',
+  extra = null,
+  actor = null,
+}) {
   if (!RESTORERS[kind]) {
     log.warn(`Nothing knows how to restore a "${kind}", so it was not remembered.`);
     return null;
   }
+  /*
+   * One or the other, and the restorer decides which.
+   *
+   * An entry with neither could never be found again — `restore` looks it up by the engagement and
+   * `restoreOwned` by the person, so a row with no owner of either sort is a leak with a TTL on it
+   * rather than an undo. Refused here rather than at the query, where it would read as "there is
+   * nothing to put back" and be indistinguishable from an expired window.
+   */
+  const free = RESTORERS[kind].scope === 'free';
+  if (free ? !owner : !audit) {
+    log.warn(`A "${kind}" was not remembered: it needs ${free ? 'an owner' : 'an engagement'}.`);
+    return null;
+  }
   try {
     const row = await Recycled.create({
-      audit: audit._id ?? audit,
+      audit: audit ? (audit._id ?? audit) : null,
+      owner: owner ? (owner._id ?? owner) : null,
       kind,
       label: String(label ?? '').slice(0, 200),
       payload,
@@ -180,7 +227,7 @@ export async function remember({ audit, kind, payload, label = '', index = null,
  * @returns {Promise<{kind: string, noun: string, label: string}>}
  */
 export async function restore(audit, entryId) {
-  const entry = await Recycled.findOne({ _id: entryId, audit: audit._id });
+  const entry = await Recycled.findOne({ _id: entryId, audit: audit._id, owner: null });
   if (!entry) {
     throw notFound(
       'There is nothing left to put back — an undo is only offered for a few minutes.'
@@ -194,4 +241,35 @@ export async function restore(audit, entryId) {
   return { kind: entry.kind, noun: restorer.noun, label: entry.label };
 }
 
-export default { remember, restore, RESTORERS, UNDO_WINDOW_MS };
+/**
+ * Puts back something that belonged to a person rather than to an engagement.
+ *
+ * The same contract with a different key. Scoped by `owner` and not merely checked against it: a
+ * lookup by id alone, verified afterwards, is a way of confirming that somebody else's entry exists
+ * — and the id is in a URL that somebody could have been sent.
+ *
+ * No `audit` is passed to the restorer, which is why these kinds are marked `scope: 'free'`: one
+ * that expected an engagement would be handed `null` and fail in a way that reads like data loss.
+ *
+ * @param {object} user whoever is asking
+ * @param {string} entryId
+ */
+export async function restoreOwned(user, entryId) {
+  const entry = await Recycled.findOne({ _id: entryId, owner: user._id ?? user });
+  if (!entry) {
+    throw notFound(
+      'There is nothing left to put back — an undo is only offered for a few minutes.'
+    );
+  }
+  const restorer = RESTORERS[entry.kind];
+  if (!restorer) throw badRequest(`Nothing knows how to restore a "${entry.kind}".`);
+  if (restorer.scope !== 'free') {
+    throw badRequest('That one belongs to an engagement, and goes back through it.');
+  }
+
+  await restorer.restore(null, entry.toObject());
+  await Recycled.deleteOne({ _id: entry._id });
+  return { kind: entry.kind, noun: restorer.noun, label: entry.label };
+}
+
+export default { remember, restore, restoreOwned, RESTORERS, UNDO_WINDOW_MS };

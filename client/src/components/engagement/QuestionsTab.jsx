@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { CircleHelp, MessageSquareQuote, Plus, Trash2 } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
@@ -32,6 +33,20 @@ const STATUS = {
   answered: { label: 'Answered', tone: 'success', hint: 'They told us.' },
   assumed: { label: 'Assumed', tone: 'neutral', hint: 'Nobody did, so we assumed this.' },
 };
+
+/**
+ * The finding a question is about, when its context is one.
+ *
+ * A question the team wrote carries free text here — "the staging host", "the login screen" — and
+ * is printed as written. One that arrived through a share link carries the finding's id, because
+ * that is the only handle the client's page had. Resolving it against the engagement already in
+ * hand turns it back into a title; an id that matches nothing is shown as nothing, which is what
+ * happens when the finding it was about has since been deleted.
+ */
+function askedAbout(audit, context) {
+  if (!context || !/^[a-f0-9]{24}$/i.test(String(context))) return null;
+  return (audit.findings ?? []).find((finding) => String(finding._id) === String(context)) ?? null;
+}
 
 export default function QuestionsTab({ audit, editable }) {
   const toast = useToast();
@@ -153,12 +168,23 @@ export default function QuestionsTab({ audit, editable }) {
             <ul className="divide-y divide-line-soft">
               {questions.map((question) => {
                 const meta = STATUS[question.status] ?? STATUS.open;
+                const about = askedAbout(audit, question.context);
                 return (
                   <li key={question._id} className="flex flex-col gap-2 px-4 py-3">
                     <div className="flex flex-wrap items-start gap-2">
                       <p className="min-w-0 flex-1 text-xs leading-relaxed text-fg">
                         {question.text}
                       </p>
+                      {/*
+                        Before the status, because it changes what the status means: an open
+                        question we asked is one we are chasing, and an open question they asked
+                        is one we owe an answer to.
+                      */}
+                      {question.fromClient ? (
+                        <Badge tone="info" icon={MessageSquareQuote}>
+                          they asked
+                        </Badge>
+                      ) : null}
                       <Badge tone={meta.tone}>{meta.label}</Badge>
                       {editable ? (
                         <Button
@@ -173,7 +199,19 @@ export default function QuestionsTab({ audit, editable }) {
                     </div>
 
                     <p className="flex flex-wrap gap-x-3 text-[0.6875rem] text-fg-subtle">
-                      {question.context ? <span>{question.context}</span> : null}
+                      {/* A title where there is one, the free text where there is not, and the
+                          raw id never — see `askedAbout`. */}
+                      {about ? (
+                        <Link
+                          to={`/engagements/${audit._id}/findings/${about._id}`}
+                          className="text-fg-muted underline-offset-2 transition hover:text-fg hover:underline"
+                        >
+                          about {about.title}
+                        </Link>
+                      ) : question.context && !/^[a-f0-9]{24}$/i.test(String(question.context)) ? (
+                        <span>{question.context}</span>
+                      ) : null}
+                      {question.fromClient ? <span>from {question.fromClient}</span> : null}
                       {question.askedOf ? <span>asked of {question.askedOf}</span> : null}
                       {question.askedBy ? <span>by {displayName(question.askedBy)}</span> : null}
                       <span>{timeAgo(question.createdAt)}</span>

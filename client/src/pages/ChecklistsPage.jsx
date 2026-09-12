@@ -26,6 +26,7 @@ import { Input, Select, Textarea } from '../components/ui/Field.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import ConflictDialog from '../components/ui/ConflictDialog.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 const UNGROUPED = 'Ungrouped';
 
@@ -106,7 +107,7 @@ function NewChecklistModal({ open, onClose, onCreated }) {
 function BulkAddModal({ open, onClose, checklistId, onAdded }) {
   const toast = useToast();
   const [text, setText] = useState('');
-  const [category, setCategory] = useState('');
+  const [category, setCategory] = useUrlState('category', '');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -373,7 +374,7 @@ export default function ChecklistsPage() {
 
   const list = useResource('/checklists', { initial: [] });
   const [selectedId, setSelectedId] = useState(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useUrlState('q', '');
   const [creating, setCreating] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);

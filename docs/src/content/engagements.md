@@ -155,6 +155,11 @@ A phishing campaign appears as four moments rather than as a list of people: the
 the first click, the first set of credentials, and the first person who reported it to the security
 team — each with how many people it applied to. The per-person detail stays on its own tab.
 
+The card opens on the **latest ten** events, with the earlier ones behind **Show more**, which adds
+ten at a time. The order on screen is always the order things happened — the window sits at the
+recent end of it, because an operation that ran for three weeks otherwise opens on week one. The
+report prints the whole thing regardless of what the page is showing.
+
 ## Renaming something everywhere
 
 The client renames the staging host on day four, and it is in six findings, two write-ups and a

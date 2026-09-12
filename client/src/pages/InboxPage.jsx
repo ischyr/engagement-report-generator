@@ -20,6 +20,7 @@ import { PageHeader, Tabs, Avatar } from '../components/ui/Misc.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { Badge, SeverityBadge } from '../components/ui/Badge.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /**
  * Everything waiting on you, in one place.
@@ -31,7 +32,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.
 export default function InboxPage() {
   const { data, error, loading, reload } = useResource('/inbox', { initial: null });
   const { markRead } = useNotifications();
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useUrlState('show', 'all');
 
   const counts =
     data?.counts ?? {

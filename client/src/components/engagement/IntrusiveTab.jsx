@@ -23,7 +23,7 @@ import { Badge } from '../ui/Badge.jsx';
 import { Alert } from '../ui/Alert.jsx';
 import { EmptyState, LoadingBlock } from '../ui/Feedback.jsx';
 import { ConfirmDialog } from '../ui/Modal.jsx';
-import { RichTextEditor } from '../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 
 /**
  * What the test changed on somebody else's system.

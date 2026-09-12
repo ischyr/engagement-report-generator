@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Pencil, Plus, ShieldAlert, Trash2, Upload } from 'lucide-react';
 
 import { api } from '../lib/api.js';
@@ -6,18 +6,20 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { calculateCvss, CVSS_DEFAULT_VECTOR } from '../lib/cvss.js';
-import { SEVERITIES, downloadBlob, filenameFromResponse, htmlToSnippet, timeAgo } from '../lib/utils.js';
+import { SEVERITIES, downloadBlob, filenameFromResponse, timeAgo } from '../lib/utils.js';
 
 import { Card } from '../components/ui/Card.jsx';
 import { PageHeader, SearchInput, Tabs } from '../components/ui/Misc.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import { Input, Select, Textarea } from '../components/ui/Field.jsx';
-import { EmptyState, ErrorState, SkeletonRows } from '../components/ui/Feedback.jsx';
+import { EmptyState, ErrorState, LoadingBlock, SkeletonRows } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
 import { SeverityBadge } from '../components/ui/Badge.jsx';
 import { CvssEditor } from '../components/cvss/CvssEditor.jsx';
-import { RichTextEditor } from '../components/editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../components/editor/LazyRichTextEditor.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
+import { useTableSort } from '../hooks/useTableSort.js';
 
 const RICH_FIELDS = [
   { key: 'description', label: 'Description' },
@@ -53,11 +55,50 @@ function EntryModal({ open, onClose, entry, onSaved }) {
   const [form, setForm] = useState(entry ?? emptyEntry());
   const [referencesText, setReferencesText] = useState('');
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
 
-  useEffect(() => {
-    const next = entry ?? emptyEntry();
+  /**
+   * The entry, fetched in full the moment it is opened.
+   *
+   * The row it was opened from carries no prose — the list stopped sending descriptions,
+   * impacts and remediations, which is the point of the change this is part of. So the three
+   * rich fields are fetched here, one entry at a time, the way an enumeration step's body is.
+   *
+   * This is why the save button waits for it, and why a failed fetch leaves it disabled rather
+   * than merely complaining: the form saves whatever it is holding, and a form seeded from a
+   * row without bodies would write three empty fields over somebody's write-up. A dialog that
+   * cannot save yet is an inconvenience; one that silently empties an entry is not.
+   */
+  const seed = (next) => {
     setForm(next);
     setReferencesText((next.details?.[0]?.references ?? []).join('\n'));
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const base = entry ?? emptyEntry();
+    seed(base);
+    setLoadError(null);
+    /* A new entry has nothing to fetch, and neither has one already carrying its bodies. */
+    if (!base._id) return undefined;
+
+    let live = true;
+    setLoading(true);
+    api
+      .get(`/vulnerabilities/${base._id}`)
+      .then((full) => {
+        if (live) seed(full);
+      })
+      .catch((error) => {
+        if (live) setLoadError(error);
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
   }, [entry, open]);
 
   const detail = form.details?.[0] ?? {};
@@ -126,12 +167,22 @@ function EntryModal({ open, onClose, entry, onSaved }) {
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button variant="primary" loading={saving} onClick={save}>
+          <Button
+            variant="primary"
+            loading={saving}
+            disabled={loading || Boolean(loadError)}
+            onClick={save}
+          >
             {form._id ? 'Save entry' : 'Add to library'}
           </Button>
         </>
       }
     >
+      {loading ? (
+        <LoadingBlock label="Loading the entry…" />
+      ) : loadError ? (
+        <ErrorState error={loadError} />
+      ) : (
       <div className="flex flex-col gap-5">
         <div className="grid gap-4 sm:grid-cols-2">
           <Input
@@ -215,43 +266,181 @@ function EntryModal({ open, onClose, entry, onSaved }) {
           className="font-mono text-xs"
         />
       </div>
+      )}
     </Modal>
   );
 }
+
+/**
+ * One row of the library, and the reason it is its own component.
+ *
+ * The same fault the findings list and the enumeration tree both had: two dozen lines of markup
+ * inside `rows.map`, so every entry was rebuilt whenever anything on the page re-rendered — and
+ * what re-renders this page is somebody typing in the search box above the table. On a library of
+ * several hundred entries that was the whole table per keystroke, each row running an HTML-to-text
+ * pass over a description to produce one truncated line. The description is not even here any
+ * more: the server sends the line, stored.
+ *
+ * `memo`, with the two callbacks created once by the page and the entry itself stable between
+ * renders — it comes from a `useMemo` over the fetched list.
+ */
+const LibraryRow = memo(function LibraryRow({ entry, canWrite, onEdit, onDelete }) {
+  return (
+    <TR onClick={canWrite ? () => onEdit(entry) : undefined}>
+      <TD className="max-w-lg">
+        <p className="truncate text-sm font-medium text-fg">{entry.detail.title || 'Untitled'}</p>
+        {entry.detail.snippet ? (
+          <p className="mt-0.5 truncate text-xs text-fg-muted">{entry.detail.snippet}</p>
+        ) : null}
+      </TD>
+      <TD>
+        <SeverityBadge severity={entry.cvss.baseSeverity} score={entry.cvss.baseScore} />
+      </TD>
+      <TD className="whitespace-nowrap text-xs text-fg-muted">
+        {[entry.category, entry.detail.vulnType].filter(Boolean).join(' · ') || '—'}
+      </TD>
+      <TD align="right" className="whitespace-nowrap text-xs text-fg-muted">
+        {timeAgo(entry.updatedAt)}
+      </TD>
+      <TD align="right">
+        {canWrite ? (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={Pencil}
+              title="Edit"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdit(entry);
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={Trash2}
+              title="Delete"
+              className="hover:text-crit"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete(entry);
+              }}
+            />
+          </div>
+        ) : null}
+      </TD>
+    </TR>
+  );
+});
 
 export default function LibraryPage() {
   const toast = useToast();
   const { canWrite } = useAuth();
   const { data, error, loading, reload } = useResource('/vulnerabilities', { initial: [] });
 
-  const [search, setSearch] = useState('');
-  const [severity, setSeverity] = useState('all');
+  const [search, setSearch] = useUrlState('q', '');
+  const [severity, setSeverity] = useUrlState('severity', 'all');
   const [editing, setEditing] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
   const list = Array.isArray(data) ? data : [];
 
+  /*
+   * The score comes from the server, which already worked it out.
+   *
+   * `decorate()` on the endpoint attaches `cvssScore` and `severity` to every entry — and this
+   * page used to ignore both and run the CVSS calculator again for each one, so the same vector
+   * was parsed twice for every row in the library, once on each side of the wire.
+   */
   const decorated = useMemo(
     () =>
-      list.map((entry) => {
-        const detail = entry.details?.[0] ?? {};
-        const cvss = calculateCvss(entry.cvssv3);
-        return { ...entry, detail, cvss };
-      }),
+      list.map((entry) => ({
+        ...entry,
+        detail: entry.details?.[0] ?? {},
+        cvss: { baseSeverity: entry.severity, baseScore: entry.cvssScore },
+      })),
     [list]
   );
 
+  /**
+   * The entries whose *text* matches, asked of the server.
+   *
+   * The list no longer carries descriptions, so filtering in the browser can only see titles,
+   * categories and the first line. Searching the real prose was a capability this page had, and
+   * losing it quietly would be the worst kind of optimisation — so the box asks the endpoint,
+   * which has always supported `?search=` and is where the text actually lives.
+   *
+   * Only the ids are used. Every entry is already on this page, so the answer's job is to say
+   * which ones also match deeper down, not to supply rows: no merging, no duplicates, no second
+   * shape to keep in step with the first.
+   */
+  const [deep, setDeep] = useState({ q: '', ids: null });
+
+  useEffect(() => {
+    const needle = search.trim();
+    /* One character matches most of a library; it is not worth a request. */
+    if (needle.length < 2) {
+      setDeep({ q: '', ids: null });
+      return undefined;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      api
+        .get(`/vulnerabilities?search=${encodeURIComponent(needle)}`)
+        .then((rows) => {
+          if (live) setDeep({ q: needle, ids: new Set((rows ?? []).map((row) => row._id)) });
+        })
+        .catch(() => {
+          /* The local filter still works; a failed deep pass narrows the search, never breaks it. */
+          if (live) setDeep({ q: needle, ids: null });
+        });
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [search]);
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
+    /* Only trusted while it is the answer to what is in the box now. */
+    const deepIds = deep.q === search.trim() ? deep.ids : null;
     return decorated.filter((entry) => {
       if (severity !== 'all' && entry.cvss.baseSeverity !== severity) return false;
       if (!needle) return true;
-      return [entry.detail.title, entry.category, entry.detail.vulnType, entry.detail.description]
+      const here = [entry.detail.title, entry.category, entry.detail.vulnType, entry.detail.snippet]
         .filter(Boolean)
         .some((field) => field.toLowerCase().includes(needle));
+      return here || Boolean(deepIds?.has(entry._id));
     });
-  }, [decorated, search, severity]);
+  }, [decorated, search, severity, deep]);
+
+  /** How many of those were found by their text rather than by anything on the row. */
+  const deeper = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return 0;
+    return filtered.filter(
+      (entry) =>
+        ![entry.detail.title, entry.category, entry.detail.vulnType, entry.detail.snippet]
+          .filter(Boolean)
+          .some((field) => field.toLowerCase().includes(needle))
+    ).length;
+  }, [filtered, search]);
+
+  /*
+   * Ordered after filtering, not before: sorting rows that are about to be discarded is work
+   * nobody sees, and on a library of several hundred entries it is the whole list every keystroke.
+   */
+  const sort = useTableSort('title');
+  const rows = sort.apply(filtered, {
+    title: (entry) => entry.detail.title,
+    /* The score, not the word. Sorted by label a library reads Critical, High, Info, Low,
+       Medium — alphabetical, and the one order nobody has ever wanted. */
+    severity: (entry) => entry.cvss.baseScore ?? 0,
+    category: (entry) => entry.category,
+    updated: (entry) => entry.updatedAt ?? null,
+  });
 
   const tabs = useMemo(
     () => [
@@ -264,6 +453,10 @@ export default function LibraryPage() {
     ],
     [decorated]
   );
+
+  /* Created once, or the memo on the row above would be decorative. */
+  const onEdit = useCallback((entry) => setEditing(entry), []);
+  const onDelete = useCallback((entry) => setPendingDelete(entry), []);
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
@@ -375,6 +568,14 @@ export default function LibraryPage() {
         />
       </div>
 
+      {deeper ? (
+        /* Said out loud, because those rows show no sign of why they match: the words are in a
+           description this page deliberately does not hold. */
+        <p className="-mt-3 text-xs text-fg-subtle">
+          {deeper} of these {deeper === 1 ? 'matches' : 'match'} somewhere in the full text.
+        </p>
+      ) : null}
+
       <Card>
         {loading ? (
           <SkeletonRows rows={6} columns={4} />
@@ -396,65 +597,21 @@ export default function LibraryPage() {
         ) : (
           <Table>
             <THead>
-              <TH>Title</TH>
-              <TH>Severity</TH>
-              <TH>Category</TH>
-              <TH align="right">Updated</TH>
+              <TH sort={sort} sortKey="title">Title</TH>
+              <TH sort={sort} sortKey="severity">Severity</TH>
+              <TH sort={sort} sortKey="category">Category</TH>
+              <TH align="right" sort={sort} sortKey="updated">Updated</TH>
               <TH width="5rem" />
             </THead>
             <TBody>
-              {filtered.map((entry) => (
-                <TR key={entry._id} onClick={canWrite ? () => setEditing(entry) : undefined}>
-                  <TD className="max-w-lg">
-                    <p className="truncate text-sm font-medium text-fg">
-                      {entry.detail.title || 'Untitled'}
-                    </p>
-                    {entry.detail.description ? (
-                      <p className="mt-0.5 truncate text-xs text-fg-muted">
-                        {htmlToSnippet(entry.detail.description, 120)}
-                      </p>
-                    ) : null}
-                  </TD>
-                  <TD>
-                    <SeverityBadge
-                      severity={entry.cvss.baseSeverity}
-                      score={entry.cvss.baseScore}
-                    />
-                  </TD>
-                  <TD className="whitespace-nowrap text-xs text-fg-muted">
-                    {[entry.category, entry.detail.vulnType].filter(Boolean).join(' · ') || '—'}
-                  </TD>
-                  <TD align="right" className="whitespace-nowrap text-xs text-fg-muted">
-                    {timeAgo(entry.updatedAt)}
-                  </TD>
-                  <TD align="right">
-                    {canWrite ? (
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          icon={Pencil}
-                          title="Edit"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setEditing(entry);
-                          }}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          icon={Trash2}
-                          title="Delete"
-                          className="hover:text-crit"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setPendingDelete(entry);
-                          }}
-                        />
-                      </div>
-                    ) : null}
-                  </TD>
-                </TR>
+              {rows.map((entry) => (
+                <LibraryRow
+                  key={entry._id}
+                  entry={entry}
+                  canWrite={canWrite}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                />
               ))}
             </TBody>
           </Table>

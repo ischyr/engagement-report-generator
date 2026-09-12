@@ -102,6 +102,30 @@ call, the claim is cleared, and the badge goes.
 So the honest reading of a client link is: it tells you where to look next, and it never decides
 anything on your behalf.
 
+## Questions, both ways
+
+The link has always taken what the client *did* — a status, and a sentence about what they changed.
+It now takes what they want to **ask**: a box under each finding, for the question they would
+otherwise have sent as an email to whoever's address they could find.
+
+The question lands in that engagement's **Questions** tab, marked with the label of the link it
+came through, against the finding it is about. Everyone on the engagement is told, the same way
+they are told when a client marks something fixed. Whatever you write back appears under the
+question on the client's page, so the loop closes where it started rather than in somebody's inbox.
+
+It is behind the same **allow updates** switch as the status box. A question is a smaller write than
+a status change and it was tempting to give it a permission of its own, but a firm handing somebody
+a read-only link has said what it means; one switch is less to explain and less to get wrong.
+
+An arriving question is **open** and does not print, like any open question — "they asked and nobody
+has replied" is a thing to chase rather than a caveat to publish, until somebody settles it.
+
+> [!note]
+> The client sees their own questions and your answers, and nothing else from that tab. The
+> questions your team asks *about* a client live in the same list, and a planted one is asserted
+> against on every run of `npm run test:client-question` and `npm run test:collab` — from the
+> client's side of the wall, with the filter deliberately broken to prove the check bites.
+
 ## Where the work happens: the Retest tab
 
 The claims land somewhere. Once anything has been claimed, retested or fixed, the engagement grows
@@ -126,6 +150,32 @@ be noise.
 > [!note]
 > There is deliberately no "verify everything" button. Accepting forty claims in one click is
 > exactly the thing the claim/verification split exists to prevent.
+
+## And across every engagement: the Verification page
+
+The Retest tab is one engagement. **Verification** in the sidebar is all of them at once, and it
+exists because of how this work actually arrives: a client sits down on a Friday, marks six findings
+fixed and asks two questions, and from your side nothing visible happens at all. The claims are in
+six Retest tabs and the questions in a Questions tab, each three clicks in, each findable only by
+somebody who already suspected they were there.
+
+Two lists, oldest first — the reverse of every other list in the app, because this one is a queue
+and the row at the top is the one somebody is about to be asked about:
+
+- **Claims waiting to be verified.** What they said, in their words, with the screenshots they
+  attached counted. **Verified fixed** and **not fixed** write through the same route the Retest tab
+  uses, so the history and the cleared claim are identical however you got there.
+- **Questions waiting for an answer.** Only the client's own — a question your team asked *about* a
+  client stays where it was, in the Questions tab, because it is a different conversation.
+
+Filter it to **Mine** for engagements you are on. The page can never show more than the engagements
+list would: it is scoped by the same rule, so an engagement you cannot open is one you cannot see
+here either, whatever is waiting on it.
+
+Approved engagements stay in the queue. A link refuses new claims and questions once a report is
+closed, so anything still sitting there arrived before the close — which makes it exactly the thing
+that would otherwise be lost. Those rows say **Approved** and offer no buttons, because the write
+behind them is genuinely refused until an admin reopens the report.
 
 A link can also be made **read-only**, for somebody who should see the position and not change it —
 their auditor, a stakeholder.

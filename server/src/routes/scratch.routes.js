@@ -15,6 +15,7 @@ import { z } from 'zod';
 
 import { Audit } from '../models/audit.model.js';
 import { Scratch } from '../models/scratch.model.js';
+import { remember, restoreOwned } from '../services/recycle.service.js';
 import { ACTIONS } from '../models/activity.model.js';
 import { recordActivity } from '../services/activity.service.js';
 import { notifyMentions } from '../services/activity.service.js';
@@ -92,7 +93,22 @@ router.delete(
   asyncHandler(async (req, res) => {
     const row = await Scratch.findOneAndDelete({ _id: req.params.id, user: req.user._id });
     if (!row) throw notFound('That note is not here');
-    res.json({ ok: true, id: req.params.id });
+    /*
+     * The first thing here that is undone by its owner rather than through an engagement.
+     *
+     * A scratchpad note belongs to one person and is referenced by nothing, which makes it both
+     * the safest thing in the app to put back and the one it was most annoying to lose to a
+     * mis-click. Deleted first and remembered after, because the delete is the thing the person
+     * asked for — an undo that could fail the delete would be the tail wagging the dog.
+     */
+    const undo = await remember({
+      owner: req.user,
+      kind: 'scratch',
+      payload: row.toObject(),
+      label: row.title || String(row.body ?? '').slice(0, 60),
+      actor: req.user,
+    });
+    res.json({ ok: true, id: req.params.id, undo });
   })
 );
 
@@ -166,6 +182,22 @@ router.post(
       kept: req.body.keep !== false,
       mentions,
     });
+  })
+);
+
+/**
+ * Puts back anything of yours that was deleted in the last few minutes.
+ *
+ * One route for every owned kind, not one per collection — the entry says what it is and
+ * `RESTORERS` says how it goes back, which is the whole point of that table. Scoped by owner in
+ * the query rather than checked afterwards: looking an entry up by id and then refusing it is a
+ * way of confirming that somebody else's entry exists.
+ */
+router.post(
+  '/undo/:entryId',
+  asyncHandler(async (req, res) => {
+    const restored = await restoreOwned(req.user, req.params.entryId);
+    res.json({ ok: true, ...restored });
   })
 );
 

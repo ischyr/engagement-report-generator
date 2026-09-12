@@ -735,6 +735,21 @@ const questionSchema = new mongoose.Schema(
     print: { type: Boolean, default: true },
 
     askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    /**
+     * Which way this one is going, and who asked.
+     *
+     * Empty for the ordinary case: the team asked the client something, and `askedOf` says who.
+     * Non-empty means the opposite — it arrived through a share link, and this holds that link's
+     * label, which is the only name anybody has for a reader with no account.
+     *
+     * One field rather than a boolean plus a name, because the two facts are never apart: a
+     * question from the client always came through some link, and a flag that had lost track of
+     * which one would leave the team with a question and no idea who to answer.
+     *
+     * `askedBy` stays null for these. It is a `User`, and there is no user.
+     */
+    fromClient: { type: String, default: '', trim: true, maxlength: 160 },
   },
   { timestamps: true }
 );

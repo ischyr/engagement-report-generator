@@ -16,7 +16,16 @@ somewhere.
 
 ## Generating
 
-**Generate report** builds the document and downloads it. What happens on the way:
+**Generate report** puts the document in a queue and follows it. The button names the step it is
+on rather than spinning, and the download starts when it is finished.
+
+You can close the tab. The render carries on without you, and the next time you open the
+engagement the button offers the finished document instead of starting a new one — for twelve
+hours, after which the bytes are cleared and you would generate it again. Two people pressing
+Generate at the same time queue rather than competing, and pressing it twice yourself joins the
+one already running instead of starting a second.
+
+What happens on the way:
 
 1. The template is opened, and its [house style](/house-style) applied if it has a base.
 2. Every screenshot the engagement uses is fetched — from a cache after the first render — and
@@ -26,6 +35,39 @@ somewhere.
 4. The tags are resolved, including tags Word has split across runs.
 5. The document is stamped with where it came from, and Word is asked to refresh its fields on
    open so the table of contents is populated.
+6. What was in it is recorded — every finding, section and scope group, hashed field by field — so
+   this document can be compared against the next one. See below.
+
+## What changed between two reports
+
+Under **Delivery → How each document was generated**, each render has always said what was
+different about *how* it was made: the template version, the app build, the settings in force, and
+the counts. "Findings: 12 → 14" is a true and unsatisfying answer, because the question underneath
+it is always *which two*.
+
+Every render now also records the report's contents, itemised. A row with changes in it opens to
+show both: the production differences as before, and under them what a reader would notice —
+
+```text
++ Session cookie without Secure          finding
+~ Stored cross-site scripting            finding   was "Reflected cross-site scripting"   title, score
+~ Executive summary                      section   text
+− Directory listing enabled              finding
+```
+
+Nothing here is a copy of the document: it is about ten characters per field, which is why it can
+be kept on every render rather than on the ones somebody thought would matter.
+
+**On the delivery register**, the same thing from the other end. A delivery records the digest of
+the file that went out; that digest is matched back to the render that produced it, so any
+delivered report can be asked what has changed since. The comparison is against the engagement **as
+it stands now**, not against the newest render — editing without generating is the commonest way a
+delivered report goes quietly out of date.
+
+It is deliberately exact about not knowing. A delivery recorded without a hash, a file this
+instance never generated, or a document from before contents were recorded all say so in as many
+words. A register whose whole value is exactness must never answer "nothing changed" when it means
+"I cannot tell".
 
 ## The handling marking
 

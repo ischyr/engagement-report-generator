@@ -11975,6 +11975,7 @@ async function main() {
         '/settings',
         '/data/companies',
         '/inbox',
+        '/verification',
         '/search?q=a',
         '/setup',
       ];
@@ -13839,6 +13840,24 @@ async function main() {
         'the token itself was stored'
       );
 
+      /*
+       * A question the team asked *about* this client, planted before the link is opened.
+       *
+       * A client can now ask questions of their own through the link, and sees them read back with
+       * whatever we replied. That makes this array the one place where internal and external words
+       * sit in the same field, so the guard below is about this sentence rather than about the
+       * name of the key it lives under.
+       */
+      await call(alice, 'POST', `/audits/${auditId}/questions`, {
+        text: 'INTERNALQUESTION do they know their old admin account is still enabled',
+        askedOf: 'their side',
+        /* Settled rather than open, for two reasons. It keeps this fixture out of the
+           open-question count a later assertion depends on — and a settled question is the
+           harder leak test, because that is the state in which a question starts printing. */
+        status: 'answered',
+        answer: 'They did not.',
+      });
+
       const view = await call(null, 'GET', `/share/${token}`);
       check('the link opens with no account at all', view.status === 200, `${view.status}`);
       check(
@@ -13870,8 +13889,13 @@ async function main() {
       );
       check(
         'nor anything internal',
-        !JSON.stringify(view.body).match(/notes|credentials|enumeration|testChecks|questions|comments/i),
+        !JSON.stringify(view.body).match(/notes|credentials|enumeration|testChecks|comments/i),
         'something internal reached the client'
+      );
+      check(
+        'nor a question the team asked about them',
+        !JSON.stringify(view.body).includes('INTERNALQUESTION'),
+        'an internal question reached the client'
       );
 
       /* The write, and everything it will not do. */

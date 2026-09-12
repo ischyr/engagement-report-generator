@@ -100,6 +100,13 @@ import {
 import { DeletedFinding } from '../models/deleted-finding.model.js';
 import { assertEditable, nextIdentifier } from '../services/engagement-write.service.js';
 import { RenderRecord } from '../models/render-record.model.js';
+import { RenderJob } from '../models/render-job.model.js';
+import {
+  enqueueRender,
+  openJobFile,
+  positionInQueue,
+  registerReportRenderer,
+} from '../services/render-queue.service.js';
 import { log } from '../utils/logger.js';
 import { Credential } from '../models/credential.model.js';
 import {
@@ -110,7 +117,12 @@ import {
   VAULT_DISABLED_MESSAGE,
 } from '../services/vault.service.js';
 import { assertFresh } from '../utils/concurrency.js';
-import { freshApprovals, reportFingerprint } from '../utils/report-fingerprint.js';
+import {
+  freshApprovals,
+  reportFingerprint,
+  reportSnapshot,
+  snapshotDifferences,
+} from '../utils/report-fingerprint.js';
 import { findingHistoryFor, normaliseTitle } from '../services/finding-history.service.js';
 import { effortFor } from '../services/effort.service.js';
 import { Delivery, DELIVERY_CHANNELS } from '../models/delivery.model.js';
@@ -6164,7 +6176,11 @@ function reportSaysCopy(buffer, label) {
   }
 }
 
-async function renderReportFile(req, audit, { templateId = '', copy = null } = {}) {
+async function renderReportFile(
+  req,
+  audit,
+  { templateId = '', copy = null, onProgress = async () => {} } = {}
+) {
   let template = audit.template;
   // Allow previewing against a different template without saving the choice.
   if (templateId) {
@@ -6181,7 +6197,12 @@ async function renderReportFile(req, audit, { templateId = '', copy = null } = {
   }
 
   const settings = await Settings.getSettings();
+  /* Everything below this line is a query against another collection, and on a long engagement
+     there are nine of them. Announced as one step because that is what it is to the person
+     waiting: the page has not got to the template yet. */
+  await onProgress('Reading the engagement', 10);
   const { buffer, filename, provenance } = await generateReport({
+    onProgress,
     /*
      * The step text, fetched here rather than inside the render — the same rule as every other
      * query the report needs. It also keeps the render usable without a database, which is how
@@ -6270,6 +6291,13 @@ async function renderReportFile(req, audit, { templateId = '', copy = null } = {
     kind: 'report',
     audit: audit._id,
     signature: signature ?? undefined,
+    /*
+     * What was in it, itemised, so this render can later be subtracted from another one.
+     *
+     * Taken from the same `audit` the document was built from rather than re-read, so it describes
+     * these bytes and not the engagement as it stands a moment later. See `reportSnapshot`.
+     */
+    snapshot: reportSnapshot(audit),
     copy: provenance.copy
       ? {
           for: provenance.copy.for,
@@ -6395,6 +6423,209 @@ router.get(
     // The digest of exactly these bytes, so "record this as sent" needs no retyping.
     attachDigest(res, buffer);
     res.end(buffer);
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* The same report, without holding the request open                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the queue builds a report, since it must not import this file.
+ *
+ * `renderReportFile` needs a dozen helpers that live here, and the queue has to be importable *by*
+ * this file in order to be given work — so the dependency is handed over at load time instead. The
+ * service knows only that it has an async function returning bytes.
+ *
+ * **Access is checked again here**, and that is the point of doing the load rather than passing the
+ * engagement through the job row. A queue puts time between asking and doing; somebody taken off an
+ * engagement, or whose membership expired, in those ninety seconds must not be handed its report.
+ * `loadAudit` is the same gate the synchronous route goes through, two-factor rule and all.
+ */
+registerReportRenderer(async ({ auditId, userId, options, onProgress }) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error('The account that asked for this report no longer exists.');
+
+  /* Enough of a request for the helpers that read from one. They want an id and an actor. */
+  const req = { params: { id: auditId }, user, query: {} };
+  const audit = await loadAudit(req);
+
+  const { buffer, filename, provenance, template } = await renderReportFile(req, audit, {
+    templateId: options?.templateId ?? '',
+    onProgress,
+  });
+
+  /* The same line in the feed the synchronous route writes, so the history does not develop a
+     gap that means "generated the new way". */
+  await recordActivity({
+    audit,
+    actor: user,
+    action: ACTIONS.REPORT_GENERATED,
+    meta: {
+      template: template.name,
+      renderId: provenance.renderId,
+      templateVersion: provenance.templateVersion,
+    },
+  });
+
+  return { buffer, filename, provenance };
+});
+
+/** The shape the page polls. Deliberately small: it is fetched every second while one runs. */
+const jobSummary = (job, position = 0) => ({
+  _id: job._id,
+  status: job.status,
+  stage: job.stage,
+  progress: job.progress,
+  /* How many are in front, so "waiting" can say what it is waiting for. */
+  position,
+  filename: job.filename,
+  size: job.size,
+  outputHash: job.outputHash,
+  renderId: job.renderId,
+  error: job.error,
+  requestedByName: job.requestedByName,
+  createdAt: job.createdAt,
+  finishedAt: job.finishedAt,
+  expiresAt: job.expiresAt,
+  collectedAt: job.collectedAt,
+});
+
+/** A job of this engagement, or a 404. Ownership is the engagement's, not the requester's. */
+async function loadJob(req) {
+  const audit = await loadAudit(req, { only: '' });
+  const job = await RenderJob.findOne({ _id: req.params.jobId, audit: audit._id });
+  if (!job) throw notFound('No such report job.');
+  return { audit, job };
+}
+
+/**
+ * Ask for a report and get a ticket rather than a document.
+ *
+ * Behind the same rate limit as the synchronous route: a queue makes leaning on the button cheaper
+ * for the browser and no cheaper for the server, so the limit matters more here rather than less.
+ */
+router.post(
+  '/:id/report/jobs',
+  renderLimiter,
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { only: '' });
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    /*
+     * One at a time per person per engagement.
+     *
+     * Pressing Generate twice is the same request, and the second one only makes the first slower.
+     * The existing ticket is handed back, which is also what makes reopening the page work: the
+     * browser asks for a report, finds the one already running, and joins it.
+     */
+    const already = await RenderJob.findOne({
+      audit: audit._id,
+      requestedBy: req.user._id,
+      status: { $in: ['queued', 'running'] },
+    });
+    if (already) {
+      return res.status(200).json({ ...jobSummary(already, await positionInQueue(already)), joined: true });
+    }
+
+    const job = await enqueueRender({
+      audit,
+      user: req.user,
+      options: { templateId: req.query.template ?? '' },
+    });
+    res.status(202).json(jobSummary(job, await positionInQueue(job)));
+  })
+);
+
+/**
+ * What this engagement has in flight, and what is waiting to be collected.
+ *
+ * The reason the page can be closed: coming back, this is what says "your report is ready".
+ */
+router.get(
+  '/:id/report/jobs',
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { only: '' });
+    const jobs = await RenderJob.find({ audit: audit._id }).sort({ createdAt: -1 }).limit(10);
+    res.json({ jobs: await Promise.all(jobs.map(async (job) => jobSummary(job, await positionInQueue(job)))) });
+  })
+);
+
+/** One job, polled while it runs. */
+router.get(
+  '/:id/report/jobs/:jobId',
+  asyncHandler(async (req, res) => {
+    const { job } = await loadJob(req);
+    res.json(jobSummary(job, await positionInQueue(job)));
+  })
+);
+
+/**
+ * The document, once there is one.
+ *
+ * Streamed rather than buffered: it is already on disk in GridFS and the whole point of the queue
+ * was to stop holding a large thing in memory while somebody waits. The digest headers are the same
+ * ones the synchronous route sets, so the delivery form prefills identically either way.
+ */
+router.get(
+  '/:id/report/jobs/:jobId/file',
+  asyncHandler(async (req, res) => {
+    const { job } = await loadJob(req);
+    if (job.status !== 'done' || !job.fileId) {
+      throw badRequest(
+        job.status === 'failed'
+          ? job.error || 'That report could not be generated.'
+          : 'That report is not ready yet.'
+      );
+    }
+
+    res.setHeader('Content-Type', DOCX_MIME);
+    if (job.size) res.setHeader('Content-Length', job.size);
+    res.setHeader('Content-Disposition', contentDisposition(job.filename));
+    res.setHeader('X-Report-Sha256', job.outputHash);
+    res.setHeader('X-Report-Size', String(job.size));
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'Content-Disposition, X-Report-Sha256, X-Report-Size'
+    );
+
+    /* Marked collected before the bytes move: a stream that fails halfway is a download somebody
+       retries, and the useful fact — that this report reached a person — is already true. */
+    if (!job.collectedAt) {
+      await RenderJob.updateOne({ _id: job._id }, { $set: { collectedAt: new Date() } });
+    }
+
+    const stream = openJobFile(job);
+    stream.on('error', () => {
+      /* The file expired or was swept between the check and the read. Nothing useful can be sent
+         at this point — the headers have gone — so the connection is dropped and the row will be
+         tidied by the next sweep. */
+      res.destroy();
+    });
+    stream.pipe(res);
+  })
+);
+
+/** Give up on one: cancels it if it has not started, and drops the document if it has finished. */
+router.delete(
+  '/:id/report/jobs/:jobId',
+  asyncHandler(async (req, res) => {
+    const { job } = await loadJob(req);
+    if (job.status === 'running') {
+      throw badRequest('That one is being generated now. It will finish in a moment.');
+    }
+    /* Expired now rather than deleted here: the sweeper owns removing the bytes, and two places
+       deleting GridFS files is how an orphan appears. */
+    await RenderJob.updateOne(
+      { _id: job._id },
+      {
+        $set: {
+          status: job.status === 'queued' ? 'cancelled' : job.status,
+          expiresAt: new Date(0),
+        },
+      }
+    );
+    res.json({ ok: true });
   })
 );
 
@@ -9338,6 +9569,70 @@ router.put(
 
     await row.populate(DELIVERY_POPULATE);
     res.json(deliverySummary(row));
+  })
+);
+
+/**
+ * What the holder of this delivery has not seen.
+ *
+ * The register can already say whether a delivered report is out of date — one fingerprint against
+ * another, exact and completely unhelpful. When a client writes back about version 1.0 the useful
+ * answer is which findings are new, which were rescored and which section was rewritten, and until
+ * now producing it meant opening two documents side by side.
+ *
+ * The route from a delivery to that answer is the file's own hash: `renderReportFile` records every
+ * document it produces with the report's content itemised, and a delivery records the digest of the
+ * bytes that went out. Matching the two is what makes this possible without keeping a copy of every
+ * .docx ever generated.
+ *
+ * Four things can go wrong and each is reported as itself rather than as an empty list — a register
+ * whose whole value is exactness must not answer "nothing changed" when it means "I cannot tell".
+ */
+router.get(
+  '/:id/deliveries/:deliveryId/changes',
+  asyncHandler(async (req, res) => {
+    const { audit, row } = await loadDelivery(req);
+
+    /* Every hash this delivery could be known by: its own, and each recipient's marked copy. */
+    const hashes = [row.fileHash, ...(row.recipients ?? []).map((entry) => entry.fileHash)].filter(
+      Boolean
+    );
+    if (!hashes.length) {
+      return res.json({
+        comparable: false,
+        why: 'No file hash was recorded for this delivery, so there is no way to tell which document went out.',
+      });
+    }
+
+    /*
+     * The newest matching render, because the same bytes can be produced more than once — a
+     * re-render of unchanged content is byte-identical, and any of those records describes it.
+     */
+    const record = await RenderRecord.findOne({ outputHash: { $in: hashes } }).sort({
+      createdAt: -1,
+    });
+    if (!record) {
+      return res.json({
+        comparable: false,
+        why: 'That file was not generated by this instance, or was generated before renders were recorded.',
+      });
+    }
+    if (!record.snapshot) {
+      return res.json({
+        comparable: false,
+        why: 'That document predates the report’s contents being recorded, so there is nothing to compare it against.',
+        renderId: record.renderId,
+      });
+    }
+
+    res.json({
+      comparable: true,
+      renderId: record.renderId,
+      renderedAt: record.createdAt,
+      /* Against the engagement as it stands, not against the newest render: somebody may have
+         edited without generating, and "nothing has changed" would then be wrong. */
+      changed: snapshotDifferences(record.snapshot, reportSnapshot(audit)),
+    });
   })
 );
 

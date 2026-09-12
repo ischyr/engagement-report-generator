@@ -259,6 +259,16 @@ export default function EngagementEditorPage() {
   };
   const [generating, setGenerating] = useState(false);
   /**
+   * The report being made, while it is being made.
+   *
+   * Held here rather than inside the button because it outlives the click: the job is on the
+   * server, so closing the tab and coming back finds it again. Null when there is nothing in
+   * flight and nothing waiting to be collected.
+   */
+  const [job, setJob] = useState(null);
+  /** A document sitting on the server that this browser has not taken yet. */
+  const readyToCollect = job?.status === 'done' && !generating;
+  /**
    * The report this browser produced most recently, so the Delivery tab can offer to record
    * it without anybody retyping a 64-character hash. Held in state rather than persisted:
    * it describes what *this* person just downloaded, which is exactly its useful lifetime.
@@ -368,16 +378,80 @@ export default function EngagementEditorPage() {
       setSearchParams(params, { replace: true });
     });
 
+  /**
+   * Open the findings list, narrowed to one severity.
+   *
+   * Both halves in a single write, deliberately. Calling `setTab('findings')` and then setting the
+   * severity separately is two navigations from the same render, and the second is built from the
+   * params as they were before the first — so the tab would be dropped and the reader would end up
+   * filtered on whichever tab they were already looking at.
+   */
+  const showSeverity = (label) =>
+    guard(() => {
+      const params = new URLSearchParams(searchParams);
+      params.set('tab', 'findings');
+      if (label) params.set('severity', label);
+      else params.delete('severity');
+      if (findingId) {
+        navigate(`/engagements/${id}?${params.toString()}`);
+        return;
+      }
+      setSearchParams(params, { replace: true });
+    });
+
   /** Applies a server response onto local state without a full refetch. */
   const patchAudit = useCallback(
     (patch) => setData((current) => (current ? { ...current, ...patch } : current)),
     [setData]
   );
 
+  /**
+   * The same, for one row of one list — the shape almost every small write actually has.
+   *
+   * A tick, an assignee, a reorder: each of them changed one field of one row and then refetched
+   * the whole engagement to find out. The writes already answer with the updated row, so the only
+   * thing the round trip added was the wait.
+   *
+   * Falls through to the caller's own reload when the row is not here — a check created by
+   * somebody else, a finding that has moved off the engagement — because a patch that silently
+   * matched nothing would leave the screen showing what it showed before, which is the one
+   * outcome worse than being slow.
+   *
+   * @param {string} path the array on the engagement: 'findings', 'testChecks', …
+   * @param {object} row as the server answered with it
+   * @returns {boolean} whether it landed
+   */
+  const patchAuditRow = useCallback(
+    (path, row) => {
+      if (!row?._id) return false;
+      let landed = false;
+      setData((current) => {
+        const list = current?.[path];
+        if (!Array.isArray(list)) return current;
+        const next = list.map((entry) => {
+          if (String(entry._id) !== String(row._id)) return entry;
+          landed = true;
+          return { ...entry, ...row };
+        });
+        return landed ? { ...current, [path]: next } : current;
+      });
+      return landed;
+    },
+    [setData]
+  );
+
   const severityCounts = useMemo(() => {
     const counts = { critical: 0, high: 0, medium: 0, low: 0, none: 0 };
     for (const finding of audit?.findings ?? []) {
-      const severity = calculateCvss(finding.cvssv3).baseSeverity;
+      /*
+       * The override, when there is one — the same rule the findings list draws by.
+       *
+       * This counted the vector's own rating and nothing else, so a finding scored Critical and
+       * reported Medium appeared under Critical here and under Medium in the list. Nobody noticed
+       * while the number was decoration. It is a link now, and a link that says 17 and produces 16
+       * rows is a defect report.
+       */
+      const severity = finding.severityOverride || calculateCvss(finding.cvssv3).baseSeverity;
       const key = severity === 'None' ? 'none' : severity.toLowerCase();
       if (key in counts) counts[key] += 1;
     }
@@ -389,31 +463,141 @@ export default function EngagementEditorPage() {
   // Approved engagements are frozen for everyone but an admin.
   const editable = canWrite && (audit?.state !== 'APPROVED' || isAdmin);
 
+  /**
+   * Collects a finished job and hands the document to the browser.
+   *
+   * Separate from the waiting, because it is also what happens when somebody comes back to a
+   * report that finished while the tab was shut.
+   */
+  const collectReport = async (job) => {
+    const response = await api.raw(`/audits/${id}/report/jobs/${job._id}/file`);
+    const blob = await response.blob();
+    const filename = filenameFromResponse(response, job.filename || `${audit?.name ?? 'report'}.docx`);
+    downloadBlob(blob, filename);
+    /* The server hashed exactly the bytes it stored; the Delivery tab prefills from this. */
+    if (job.outputHash) {
+      setLastGenerated({
+        filename,
+        hash: job.outputHash,
+        size: job.size || blob.size,
+        kind: 'docx',
+        at: new Date().toISOString(),
+      });
+    }
+    setJob(null);
+  };
+
+  /**
+   * Ask for the report, then watch it being made.
+   *
+   * This used to be one GET that returned a document — and held the connection open for as long as
+   * the render took, which on a report with sixty screenshots is long enough that the documentation
+   * had to tell people to raise their proxy timeout. Now the request comes back immediately with a
+   * ticket, and the page follows it: the button says which part is running, the tab can be closed
+   * and the document collected later, and two people generating at once queue instead of fighting
+   * over one Node thread.
+   *
+   * Asking twice joins the job already running rather than starting a second one — which is also
+   * what makes reopening the page work, since it arrives at the same answer by the same route.
+   */
   const generateReport = async () => {
     setGenerating(true);
     try {
-      const response = await api.raw(`/audits/${id}/report`);
-      const blob = await response.blob();
-      const filename = filenameFromResponse(response, `${audit?.name ?? 'report'}.docx`);
-      downloadBlob(blob, filename);
-      // The server hashed exactly the bytes it sent; the Delivery tab prefills from this.
-      const hash = response.headers.get('X-Report-Sha256');
-      if (hash) {
-        setLastGenerated({
-          filename,
-          hash,
-          size: Number(response.headers.get('X-Report-Size')) || blob.size,
-          kind: 'docx',
-          at: new Date().toISOString(),
-        });
+      const started = await api.post(`/audits/${id}/report/jobs`, {});
+      setJob(started);
+      if (started.status === 'done') {
+        await collectReport(started);
+        toast.success('Report ready', 'Check your downloads folder.');
       }
-      toast.success('Report generated', 'Check your downloads folder.');
     } catch (err) {
-      toast.fromError(err, 'Could not generate the report');
-    } finally {
       setGenerating(false);
+      toast.fromError(err, 'Could not generate the report');
     }
   };
+
+  /**
+   * Following a job until it is a document.
+   *
+   * A second is chosen against what it is watching: a render takes seconds to a minute, and a
+   * progress bar that steps five times over that reads as broken. The interval is torn down on
+   * every state change and rebuilt, which is why `cancelled` exists — a request already in flight
+   * when the job finishes must not put a stale status back on the screen.
+   */
+  useEffect(() => {
+    if (!job || (job.status !== 'queued' && job.status !== 'running')) return undefined;
+
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      let next;
+      try {
+        next = await api.get(`/audits/${id}/report/jobs/${job._id}`);
+      } catch {
+        /* One missed poll is a hiccup, not a failure — the next one will say the same thing. */
+        return;
+      }
+      if (cancelled) return;
+
+      if (next.status === 'done') {
+        clearInterval(timer);
+        try {
+          await collectReport(next);
+          toast.success('Report ready', 'Check your downloads folder.');
+        } catch (err) {
+          setJob(next);
+          toast.fromError(err, 'The report was generated but could not be downloaded');
+        }
+        setGenerating(false);
+        return;
+      }
+      if (next.status === 'failed' || next.status === 'cancelled') {
+        clearInterval(timer);
+        setJob(null);
+        setGenerating(false);
+        toast.error(
+          'Could not generate the report',
+          next.error || 'It stopped before producing a document.'
+        );
+        return;
+      }
+      setJob(next);
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?._id, job?.status, id]);
+
+  /**
+   * A report that finished while nobody was looking.
+   *
+   * The whole point of the queue: the tab was closed, or the laptop was shut, and the render
+   * carried on. On arrival the page asks what is outstanding and offers it — deliberately as a
+   * button rather than as an automatic download, because a file appearing in somebody's downloads
+   * folder because they opened a page is a surprise, not a convenience.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get(`/audits/${id}/report/jobs`)
+      .then(({ jobs = [] }) => {
+        if (cancelled) return;
+        const running = jobs.find((entry) => ['queued', 'running'].includes(entry.status));
+        const waiting = jobs.find((entry) => entry.status === 'done' && !entry.collectedAt);
+        const found = running ?? waiting;
+        if (!found) return;
+        setJob(found);
+        setGenerating(Boolean(running));
+      })
+      .catch(() => {
+        /* An engagement nobody can generate for is not a reason to fail opening it. */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   /* The password dialog, which is a choice per download rather than a mode the instance is in. */
   const [protecting, setProtecting] = useState(false);
@@ -634,19 +818,35 @@ export default function EngagementEditorPage() {
                     onClick={() => setPreviewing(true)}
                   />
                 ) : null}
+                {/*
+                  One button, three states, because they are one thing at three moments.
+                  Waiting says which part is running — a render that says nothing for forty seconds
+                  is indistinguishable from one that has died — and a finished job that nobody has
+                  collected says so, which is what makes closing the tab safe.
+                */}
                 <Button
                   variant="primary"
                   icon={generating ? undefined : FileDown}
                   loading={generating}
-                  onClick={generateReport}
+                  onClick={
+                    readyToCollect ? () => void collectReport(job).catch(() => {}) : generateReport
+                  }
                   disabled={!audit.template}
                   title={
                     audit.template
-                      ? 'Generate the .docx report'
+                      ? readyToCollect
+                        ? 'It finished while you were away'
+                        : 'Generate the .docx report'
                       : 'Assign a template on the Overview tab first'
                   }
                 >
-                  Generate report
+                  {generating
+                    ? `${job?.stage ?? 'Starting'}${
+                        job?.position ? ` — ${job.position} in front` : ''
+                      }`
+                    : readyToCollect
+                      ? 'Download the report'
+                      : 'Generate report'}
                 </Button>
                 {/*
                   Beside Generate rather than instead of it. Most reports go into a folder on this
@@ -742,7 +942,11 @@ export default function EngagementEditorPage() {
             <span className="text-[0.6875rem] uppercase tracking-wider text-fg-subtle">
               {findingCount} finding{findingCount === 1 ? '' : 's'}
             </span>
-            <SeverityLegend counts={severityCounts} className="gap-x-3" />
+            {/*
+              A control, not a caption. "Critical 17" is the question somebody is about to ask the
+              findings list, and it was making them ask it by hand.
+            */}
+            <SeverityLegend counts={severityCounts} className="gap-x-3" onPick={showSeverity} />
           </div>
           <SeverityBar counts={severityCounts} total={findingCount} />
         </div>
@@ -790,7 +994,13 @@ export default function EngagementEditorPage() {
         <OverviewTab audit={audit} editable={editable} onPatch={patchAudit} onReload={reload} />
       ) : null}
       {tab === 'findings' ? (
-        <FindingsTab audit={audit} editable={editable} onPatch={patchAudit} onReload={reload} />
+        <FindingsTab
+          audit={audit}
+          editable={editable}
+          onPatch={patchAudit}
+          onPatchRow={patchAuditRow}
+          onReload={reload}
+        />
       ) : null}
       {tab === 'enumeration' ? (
         <EnumerationTab audit={audit} editable={editable} onReload={reload} />
@@ -828,7 +1038,12 @@ export default function EngagementEditorPage() {
             size="sm"
           />
           {checkView === 'tests' ? (
-            <TestChecksTab audit={audit} editable={editable} onReload={reload} />
+            <TestChecksTab
+              audit={audit}
+              editable={editable}
+              onReload={reload}
+              onPatchRow={patchAuditRow}
+            />
           ) : (
             <PreflightPanel auditId={audit._id} onGoToTab={setTab} />
           )}

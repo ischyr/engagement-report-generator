@@ -29,18 +29,30 @@ const KINDS = {
   delivery: { icon: Send, label: 'report', tone: 'text-low' },
 };
 
-/** How many rows before it stops being a page and starts being a wall. */
-const FIRST_FEW = 25;
+/**
+ * How much of it is on screen to begin with, and how much each press adds.
+ *
+ * Ten, from the **end**. The rows are in the order things happened, which is what the card is for
+ * — but the first twenty-five of them are the start of an operation that may have run for three
+ * weeks, and somebody opening this tab is almost always asking what happened recently. So the
+ * window sits at the newest end and is dragged backwards through the history ten at a time.
+ *
+ * The rows inside the window stay in their own order, oldest at the top. Reversing them would make
+ * the card read as a feed, and the one thing this merge exists to show is a sequence.
+ */
+const STEP = 10;
 
 export default function OperationTimeline({ audit }) {
   const { data } = useResource(`/audits/${audit._id}/timeline`, { initial: null });
-  const [all, setAll] = useState(false);
+  const [limit, setLimit] = useState(STEP);
 
   const rows = data?.rows ?? [];
   const summary = data?.summary ?? null;
   if (!rows.length) return null;
 
-  const shown = all ? rows : rows.slice(0, FIRST_FEW);
+  /* The tail, not the head: the latest `limit` events, still oldest-first among themselves. */
+  const shown = limit >= rows.length ? rows : rows.slice(rows.length - limit);
+  const earlier = rows.length - shown.length;
   const skippedRuns = data?.skipped?.runs ?? 0;
 
   return (
@@ -80,6 +92,30 @@ export default function OperationTimeline({ audit }) {
         </CardBody>
       ) : null}
 
+      {/*
+        Above the list, because that is where the rows it reveals appear. The hidden events are
+        the earlier ones and the list runs downwards in time, so a button at the foot would push
+        its own result off the top of the card — the same reason every message history puts
+        "earlier" at the top.
+      */}
+      {rows.length > STEP ? (
+        <CardBody className="flex flex-wrap items-center gap-3 border-b border-line-soft py-2.5">
+          <button
+            type="button"
+            onClick={() => setLimit(earlier ? limit + STEP : STEP)}
+            className="flex items-center gap-1 text-xs text-fg-muted transition hover:text-fg"
+          >
+            {earlier ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {earlier ? 'Show more' : 'Show fewer'}
+          </button>
+          <span className="text-[0.6875rem] text-fg-subtle">
+            {earlier
+              ? `${earlier} earlier event${earlier === 1 ? '' : 's'} not shown`
+              : `all ${rows.length} shown`}
+          </span>
+        </CardBody>
+      ) : null}
+
       <CardBody className="p-0">
         <ol className="divide-y divide-line-soft">
           {shown.map((row, index) => {
@@ -113,29 +149,17 @@ export default function OperationTimeline({ audit }) {
         </ol>
       </CardBody>
 
-      {rows.length > FIRST_FEW || skippedRuns ? (
+      {skippedRuns ? (
         <CardBody className="flex flex-wrap items-center gap-3 border-t border-line-soft">
-          {rows.length > FIRST_FEW ? (
-            <button
-              type="button"
-              onClick={() => setAll((current) => !current)}
-              className="flex items-center gap-1 text-xs text-fg-muted transition hover:text-fg"
-            >
-              {all ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-              {all ? 'Show fewer' : `Show all ${rows.length}`}
-            </button>
-          ) : null}
           {/*
             Said rather than hidden. A step with no recorded run time is left out, because placing
             it by when somebody wrote it up would put a false event in the one list whose value is
             the sequence — so the count is on the page instead.
           */}
-          {skippedRuns ? (
-            <span className="text-[0.6875rem] text-fg-subtle">
-              {skippedRuns} step{skippedRuns === 1 ? '' : 's'} ran without a recorded time and{' '}
-              {skippedRuns === 1 ? 'is' : 'are'} not placed here.
-            </span>
-          ) : null}
+          <span className="text-[0.6875rem] text-fg-subtle">
+            {skippedRuns} step{skippedRuns === 1 ? '' : 's'} ran without a recorded time and{' '}
+            {skippedRuns === 1 ? 'is' : 'are'} not placed here.
+          </span>
         </CardBody>
       ) : null}
     </Card>

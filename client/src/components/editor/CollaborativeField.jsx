@@ -1,7 +1,7 @@
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useCapabilities } from '../../context/CapabilitiesContext.jsx';
 import { useCollab } from '../../hooks/useCollab.js';
-import { RichTextEditor } from './RichTextEditor.jsx';
+import { RichTextEditor } from './LazyRichTextEditor.jsx';
 import { Avatar } from '../ui/Misc.jsx';
 
 /**

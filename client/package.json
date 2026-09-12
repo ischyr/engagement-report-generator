@@ -18,7 +18,11 @@
     "test:intrusive-tab": "node scripts/intrusive-check.mjs",
     "test:chunks": "node scripts/chunks-check.mjs",
     "test:live-poll": "node scripts/live-poll-check.mjs",
-    "test:findings-rows": "node scripts/findings-rows-check.mjs"
+    "test:findings-rows": "node scripts/findings-rows-check.mjs",
+    "test:enumeration-rows": "node scripts/enumeration-rows-check.mjs",
+    "test:library-editor": "node scripts/library-editor-check.mjs",
+    "test:timeline-window": "node scripts/timeline-window-check.mjs",
+    "test:url-state": "node scripts/url-state-check.mjs"
   },
   "dependencies": {
     "@tiptap/extension-collaboration": "^2.27.3",

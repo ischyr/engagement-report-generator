@@ -1,5 +1,5 @@
 import { Field, Input, Select, Textarea } from '../ui/Field.jsx';
-import { RichTextEditor } from '../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 import { cn } from '../../lib/utils.js';
 
 /**

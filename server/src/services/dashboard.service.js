@@ -50,23 +50,52 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
   const since = shift(today, -BEHIND_DAYS);
 
   /*
-   * One read of the engagements this person can see, reused for everything below.
+   * Two reads of the engagements this person can see, because they are asked two different
+   * questions.
    *
-   * Findings and checks are projected down to the three fields that are actually counted —
-   * the same discipline the engagements list applies, and for the same reason: the alternative
-   * is megabytes of HTML crossing the wire to produce a number.
+   * Findings and checks were already projected down to the fields that are actually counted — the
+   * same discipline the engagements list applies. What the projection could not express is that
+   * most of those fields are only ever read about work that is **still going on**. Everything
+   * below that walks a checklist, looks for a finding with no evidence, or judges an engagement's
+   * health begins by skipping approved engagements; so on an instance with three years of
+   * delivered work, the great majority of what this loaded was carried across the wire to meet a
+   * `continue`.
+   *
+   * Finished engagements are still wanted, and that is why this is a split rather than a filter:
+   * they count towards the totals and the severity figures, they can still be the next occurrence
+   * of recurring work, and a booking can point at one. Those four things need six fields between
+   * them. The rest is for the living.
+   *
+   * The two are concatenated straight back into one `audits` array, so nothing downstream knows
+   * this happened — which is the property that makes it safe. Every field dropped from the
+   * finished query is read only by code that has already skipped approved engagements, and
+   * `test:dashboard` asserts exactly that by checking the numbers still come out right.
    */
-  const audits = await Audit.find(visibleAuditFilter(user))
-    .select(
-      'name reference state date_end updatedAt createdAt onHold holds company repeat ' +
-        'findings._id findings.title findings.cvssv3 findings.severityOverride ' +
-        'findings.evidenceCount findings.createdBy findings.remediationStatus ' +
-        'testChecks._id testChecks.title testChecks.category testChecks.done ' +
-        'testChecks.blocked testChecks.assignedTo tags'
-    )
-    .populate({ path: 'company', select: 'name' })
-    .sort({ updatedAt: -1 })
-    .lean();
+  const LIVE_FIELDS =
+    'name reference state date_end updatedAt createdAt onHold holds company repeat ' +
+    'findings._id findings.title findings.cvssv3 findings.severityOverride ' +
+    'findings.evidenceCount findings.createdBy findings.remediationStatus ' +
+    'testChecks._id testChecks.title testChecks.category testChecks.done ' +
+    'testChecks.blocked testChecks.assignedTo tags';
+
+  /** What is still asked about finished work: the totals, the recurrence, and a booking's label. */
+  const DONE_FIELDS =
+    'name reference state onHold repeat company ' +
+    'findings.cvssv3 findings.severityOverride findings.remediationStatus';
+
+  const [live, done] = await Promise.all([
+    Audit.find(visibleAuditFilter(user, { state: { $ne: 'APPROVED' } }))
+      .select(LIVE_FIELDS)
+      .populate({ path: 'company', select: 'name' })
+      .sort({ updatedAt: -1 })
+      .lean(),
+    Audit.find(visibleAuditFilter(user, { state: 'APPROVED' }))
+      .select(DONE_FIELDS)
+      .populate({ path: 'company', select: 'name' })
+      .sort({ updatedAt: -1 })
+      .lean(),
+  ]);
+  const audits = [...live, ...done];
 
   const mineId = String(user._id);
 
@@ -74,10 +103,10 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
   const myChecks = [];
   const myFindingsWithoutEvidence = [];
 
-  for (const audit of audits) {
-    // An approved engagement is finished; listing its loose ends as work is noise.
-    if (audit.state === 'APPROVED') continue;
-
+  /* `live` rather than `audits`: an approved engagement is finished, and listing its loose ends
+     as work is noise. It was a `continue` inside the loop; it is now the list the loop is over,
+     which is also why the finished query need not carry a checklist at all. */
+  for (const audit of live) {
     for (const check of audit.testChecks ?? []) {
       // A blocked check is not work you can do today; it is waiting on somebody else.
       if (check.done || check.blocked) continue;
@@ -164,12 +193,11 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
    * outside the projection above.
    */
   const kitByAudit = await kitHealthFor(
-    audits.map((audit) => audit._id),
+    live.map((audit) => audit._id),
     { now }
   );
 
-  const attention = audits
-    .filter((audit) => audit.state !== 'APPROVED')
+  const attention = live
     .map((audit) => {
       const health = engagementHealth(audit, {
         now,
@@ -228,7 +256,9 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
   return {
     totals: {
       engagements: audits.length,
-      open: audits.filter((audit) => audit.state !== 'APPROVED').length,
+      /* The same number the filter produced, now that the two lists are separated by that
+         very question — and one the reader can check against the query above. */
+      open: live.length,
       onHold: audits.filter((audit) => audit.onHold).length,
       findings: findingCount,
       severityCounts,

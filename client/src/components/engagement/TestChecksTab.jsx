@@ -109,10 +109,12 @@ function PresetModal({ open, onClose, auditId, onAdded }) {
  * than anonymous. Unlike notes and comments these are reportable — templates can
  * print them as a "technical checks" section.
  */
-export default function TestChecksTab({ audit, editable, onReload }) {
+export default function TestChecksTab({ audit, editable, onReload, onPatchRow }) {
   const toast = useToast();
   const { canWrite } = useAuth();
-  const { data, loading, reload } = useResource(`/audits/${audit._id}/test-checks`, { initial: [] });
+  const { data, loading, reload, setData } = useResource(`/audits/${audit._id}/test-checks`, {
+    initial: [],
+  });
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -219,8 +221,28 @@ export default function TestChecksTab({ audit, editable, onReload }) {
   const toggle = async (check) => {
     setBusyId(check._id);
     try {
-      await api.put(`/audits/${audit._id}/test-checks/${check._id}`, { done: !check.done });
-      await refresh();
+      /*
+       * One tick used to cost two requests: this list again, and then the whole engagement,
+       * because the preflight panel counts unticked checks and had to be kept in step.
+       *
+       * The write answers with the check. Putting that into both places is the same correctness
+       * with neither request — and `setData` rather than a refetch means the row does not flicker
+       * through a loading state on the way to showing a box that is now ticked.
+       */
+      const saved = await api.put(`/audits/${audit._id}/test-checks/${check._id}`, {
+        done: !check.done,
+      });
+
+      let landed = false;
+      if (saved?._id) {
+        setData((current) =>
+          (current ?? []).map((row) => (row._id === saved._id ? { ...row, ...saved } : row))
+        );
+        /* The engagement's own copy, which preflight counts. If it is not there — a check
+           somebody else added since this page loaded — fall back and ask properly. */
+        landed = Boolean(onPatchRow?.('testChecks', saved));
+      }
+      if (!landed) await refresh();
     } catch (error) {
       toast.fromError(error);
     } finally {

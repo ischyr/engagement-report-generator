@@ -23,6 +23,7 @@ import {
   ScrollText,
   Settings,
   ShieldAlert,
+  ShieldQuestion,
   Sliders,
   UserRound,
   TrendingUp,
@@ -43,6 +44,7 @@ import NotificationsBar from './NotificationsBar.jsx';
 import { Button } from '../ui/Button.jsx';
 /* For the Suspense boundary around the Outlet: pages arrive on demand. See App.jsx. */
 import { LoadingBlock } from '../ui/Feedback.jsx';
+import ShortcutsDialog from './ShortcutsDialog.jsx';
 
 /** Kept in step with ROLE_LABELS on the server and the Users page. */
 const ROLE_LABELS = {
@@ -57,6 +59,13 @@ const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   // Second, because "what needs me" is the question people open the app with.
   { to: '/inbox', label: 'Inbox', icon: Inbox },
+  /*
+   * Straight after it, because it is the same question asked the other way round: the Inbox is
+   * what needs *you*, and this is what a client has been waiting on us for — a claim nobody has
+   * retested, a question nobody has answered. Both used to be reachable only from inside the one
+   * engagement they happened to arrive in.
+   */
+  { to: '/verification', label: 'Verification', icon: ShieldQuestion },
   { to: '/engagements', label: 'Engagements', icon: ScrollText },
   /*
    * Beside Engagements, because it is the same list read as a question about people: who is in
@@ -549,6 +558,15 @@ export function AppShell() {
           ) : null}
         </footer>
       </div>
+
+      {/*
+        What the keyboard does, on `?`.
+
+        Mounted here rather than on a page because the bindings are not a page's: ⌘S belongs to
+        whatever is dirty, Ctrl+K to the search, and the list walk to whichever list is on screen.
+        One listener behind the auth gate, and it is reachable from everywhere they work.
+      */}
+      <ShortcutsDialog />
     </div>
   );
 }

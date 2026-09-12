@@ -14,6 +14,7 @@ import presenceRoutes from './presence.routes.js';
 import notificationsRoutes from './notifications.routes.js';
 import mediaRoutes from './media.routes.js';
 import inboxRoutes from './inbox.routes.js';
+import verificationRoutes from './verification.routes.js';
 import scheduleRoutes from './schedule.routes.js';
 import leaveRoutes from './leave.routes.js';
 import timeRoutes from './time.routes.js';
@@ -149,6 +150,8 @@ router.get(
 router.use('/presence', presenceRoutes);
 router.use('/notifications', notificationsRoutes);
 router.use('/inbox', inboxRoutes);
+/* The other half of the inbox: what the *client* is waiting on, across every engagement. */
+router.use('/verification', verificationRoutes);
 router.use('/schedule', scheduleRoutes);
 router.use('/leave', leaveRoutes);
 router.use('/time', timeRoutes);

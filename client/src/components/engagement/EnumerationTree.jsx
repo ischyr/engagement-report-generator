@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import {
   Bug,
   ChevronDown,
@@ -98,6 +98,257 @@ function NodeIcon({ row, collapsed }) {
 }
 
 /**
+ * One row of the tree, and the reason it is its own component.
+ *
+ * The workbench is a tree beside an editor, and the editor's draft is state on the tab above both.
+ * So every keystroke in a step's write-up re-rendered the tab, which re-rendered this list, which
+ * rebuilt every row — two hundred of them on a real operation, each with its indent guides, its
+ * icon, its five chips and its drag handlers. The findings list had exactly this fault and was
+ * fixed the same way; this is the other screen people spend the day in.
+ *
+ * `memo`, and every prop a primitive or something stable. The parent holds `picked`, `collapsed`
+ * and `dropHint` as Sets and objects that change identity whenever anything in them does — so a
+ * row is handed the *answers* (`isPicked`, `isCollapsed`, `hint`) rather than the collections to
+ * look itself up in. Passing the Set would make the memo decorative: a new Set on every tick means
+ * every row re-renders, which is the state this started in.
+ *
+ * The callbacks are stable for the life of the tab — see the note beside them in `EnumerationTab`.
+ */
+const TreeRow = memo(function TreeRow({
+  row,
+  id,
+  full,
+  isSelected,
+  isCollapsed,
+  isPicked,
+  anyPicked,
+  /** A drag is in progress somewhere, and whether this row is the thing being dragged. */
+  dragging,
+  isDragging,
+  /** Where a drop would land on *this* row: 'before' | 'after' | 'inside' | null. */
+  hint,
+  inside,
+  place,
+  filtering,
+  editable,
+  moving,
+  onSelect,
+  onPick,
+  onToggleCollapse,
+  onAddChild,
+  setDragId,
+  setDropHint,
+  onDrop,
+}) {
+  const outputLines = row.outputLines ?? 0;
+
+  return (
+    <li
+      role="treeitem"
+      aria-selected={isSelected}
+      aria-expanded={row.hasChildren ? !isCollapsed : undefined}
+      /*
+        Depth and place, which is the one thing a tree knows that a list does not — and
+        until these were here, the only thing a screen reader could not be told. `role="tree"`
+        on its own announces "1 of 60" for a row four levels down.
+      */
+      aria-level={(row.depth ?? 0) + 1}
+      aria-posinset={place?.position}
+      aria-setsize={place?.of}
+      draggable={editable && !moving}
+      onDragStart={(event) => {
+        setDragId(id);
+        event.dataTransfer.effectAllowed = 'move';
+        /* Firefox will not start a drag without payload. */
+        event.dataTransfer.setData('text/plain', id);
+      }}
+      onDragEnd={() => {
+        setDragId(null);
+        setDropHint(null);
+      }}
+      onDragOver={(event) => {
+        if (!dragging || isDragging) return;
+        event.preventDefault();
+        /*
+          Three zones by vertical position: the outer quarters put the branch beside the row,
+          the middle half puts it inside. The gesture an outliner already taught people, so
+          nesting needs no separate control.
+        */
+        const box = event.currentTarget.getBoundingClientRect();
+        const offset = (event.clientY - box.top) / box.height;
+        setDropHint({
+          id,
+          zone: offset < 0.3 ? 'before' : offset > 0.7 ? 'after' : 'inside',
+        });
+      }}
+      onDragLeave={() => setDropHint((h) => (h?.id === id ? null : h))}
+      onDrop={(event) => {
+        event.preventDefault();
+        /*
+         * The zone from the pointer when there is no hint yet — a drop in the same tick as the
+         * dragover has none. `hint` is this row's zone or null, which is the same test the old
+         * `dropHint?.id === id` was making, asked of a prop instead of a shared object.
+         */
+        const box = event.currentTarget.getBoundingClientRect();
+        const offset = (event.clientY - box.top) / box.height;
+        const zone =
+          hint ?? (offset < 0.3 ? 'before' : offset > 0.7 ? 'after' : 'inside');
+        onDrop(event, row._id, zone);
+      }}
+      className={cn(
+        'relative',
+        hint === 'before' &&
+          'before:absolute before:inset-x-1 before:top-0 before:z-10 before:h-0.5 before:rounded-full before:bg-brand-400',
+        hint === 'after' &&
+          'after:absolute after:inset-x-1 after:bottom-0 after:z-10 after:h-0.5 after:rounded-full after:bg-brand-400',
+        hint === 'inside' && 'ring-1 ring-inset ring-brand-400/70',
+        isDragging && 'opacity-40'
+      )}
+    >
+      <div
+        className={cn(
+          'group/row flex items-stretch',
+          isSelected ? 'bg-brand-500/12' : 'hover:bg-white/[0.04]'
+        )}
+      >
+        {/*
+          One guide per ancestor level. Drawn as fixed-width cells with a left border rather
+          than as padding, so the rules line up exactly down the tree however deep it goes.
+        */}
+        {Array.from({ length: row.depth }, (_, level) => (
+          // eslint-disable-next-line react/no-array-index-key
+          <span key={level} aria-hidden className="w-3.5 shrink-0 border-l border-line-soft/70" />
+        ))}
+
+        {editable ? (
+          <label
+            className={cn(
+              'grid w-5 shrink-0 cursor-pointer place-items-center transition',
+              anyPicked ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'
+            )}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={isPicked}
+              onChange={() => onPick(id)}
+              className="size-3 accent-brand-500"
+            />
+          </label>
+        ) : null}
+
+        {/* The twisty, or a space where one would be, so the icons line up. */}
+        {row.hasChildren && !filtering ? (
+          <button
+            type="button"
+            onClick={() => onToggleCollapse(id)}
+            className="grid w-4 shrink-0 place-items-center text-fg-subtle transition hover:text-fg"
+            aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+          >
+            {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" aria-hidden />
+        )}
+
+        <button
+          type="button"
+          onClick={() => onSelect(row._id)}
+          title={row.target || row.summary || row.title || undefined}
+          className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
+        >
+          <NodeIcon row={row} collapsed={isCollapsed} />
+
+          <span className="shrink-0 font-mono text-[0.625rem] text-fg-subtle">{row.path}</span>
+
+          <span
+            className={cn(
+              'truncate text-xs',
+              row.hasChildren ? 'font-semibold' : 'font-medium',
+              row.heldBack ? 'text-fg-muted line-through decoration-fg-subtle/50' : '',
+              isSelected ? 'text-brand-200' : 'text-fg'
+            )}
+          >
+            {row.title || 'Untitled step'}
+          </span>
+
+          {/* Chips, in one line, ordered by how often somebody scans for them. */}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] text-fg-subtle">
+            {isCollapsed ? (
+              <span className="rounded bg-white/[0.06] px-1 font-mono" title={`${inside} rows inside`}>
+                {inside}
+              </span>
+            ) : null}
+            {row.tool && full ? (
+              <span className="max-w-[7rem] truncate font-mono text-brand-200/70">{row.tool}</span>
+            ) : null}
+            {outputLines ? (
+              <span
+                className="inline-flex items-center gap-0.5 font-mono"
+                title={`${outputLines} lines of output`}
+              >
+                <Terminal size={9} />
+                {outputLines}
+              </span>
+            ) : null}
+            {row.outputStale ? (
+              <span
+                className="font-mono text-med/80"
+                title={`Output is ${row.outputAge} days old — worth re-running before this ships`}
+              >
+                {row.outputAge}d
+              </span>
+            ) : null}
+            {row.noteCount ? (
+              <span
+                className={cn(
+                  'inline-flex items-center gap-0.5 font-mono',
+                  row.notesStale ? 'text-med' : ''
+                )}
+                title={
+                  row.notesStale
+                    ? `${row.noteCount} marked line(s), ${row.notesStale} no longer in the output`
+                    : `${row.noteCount} marked line(s)`
+                }
+              >
+                <MessageSquare size={9} />
+                {row.noteCount}
+              </span>
+            ) : null}
+            {row.findings?.length ? (
+              <span
+                className="inline-flex items-center gap-0.5 text-low"
+                title={`Written up as ${row.findings.length} finding(s)`}
+              >
+                <Bug size={9} />
+                {row.findings.length}
+              </span>
+            ) : null}
+            {row.status ? (
+              <span
+                className={cn('size-1.5 rounded-full', STATUS_DOT[row.status])}
+                title={STATUS_TITLE[row.status]}
+              />
+            ) : null}
+          </span>
+        </button>
+
+        {editable ? (
+          <button
+            type="button"
+            onClick={() => onAddChild(row._id)}
+            title="Add a step under this one"
+            className="grid w-6 shrink-0 place-items-center text-fg-subtle opacity-0 transition hover:bg-white/10 hover:text-fg focus:opacity-100 group-hover/row:opacity-100"
+          >
+            <Plus size={12} />
+          </button>
+        ) : null}
+      </div>
+    </li>
+  );
+});
+
+/**
  * The enumeration tree.
  *
  * One line per node, deliberately. The first version gave each row three — title, then a row of
@@ -184,232 +435,33 @@ export default function EnumerationTree({
     >
       {visible.map((row) => {
         const id = idOf(row._id);
-        const isCollapsed = collapsed.has(id);
-        const isSelected = id === idOf(selectedId);
-        const hint = dropHint?.id === id ? dropHint.zone : null;
-        /* Counted on the server, which is the only place the output still lives. */
-        const outputLines = row.outputLines ?? 0;
-        const inside = descendants.get(id) ?? 0;
-        const place = among.get(id);
-
         return (
-          <li
+          <TreeRow
             key={id}
-            role="treeitem"
-            aria-selected={isSelected}
-            aria-expanded={row.hasChildren ? !isCollapsed : undefined}
-            /*
-              Depth and place, which is the one thing a tree knows that a list does not — and
-              until these were here, the only thing a screen reader could not be told. `role="tree"`
-              on its own announces "1 of 60" for a row four levels down.
-            */
-            aria-level={(row.depth ?? 0) + 1}
-            aria-posinset={place?.position}
-            aria-setsize={place?.of}
-            draggable={editable && !moving}
-            onDragStart={(event) => {
-              setDragId(id);
-              event.dataTransfer.effectAllowed = 'move';
-              /* Firefox will not start a drag without payload. */
-              event.dataTransfer.setData('text/plain', id);
-            }}
-            onDragEnd={() => {
-              setDragId(null);
-              setDropHint(null);
-            }}
-            onDragOver={(event) => {
-              if (!dragId || dragId === id) return;
-              event.preventDefault();
-              /*
-                Three zones by vertical position: the outer quarters put the branch beside the row,
-                the middle half puts it inside. The gesture an outliner already taught people, so
-                nesting needs no separate control.
-              */
-              const box = event.currentTarget.getBoundingClientRect();
-              const offset = (event.clientY - box.top) / box.height;
-              setDropHint({
-                id,
-                zone: offset < 0.3 ? 'before' : offset > 0.7 ? 'after' : 'inside',
-              });
-            }}
-            onDragLeave={() => setDropHint((h) => (h?.id === id ? null : h))}
-            onDrop={(event) => {
-              event.preventDefault();
-              /*
-               * The zone from the pointer, not from the hint state, for the same reason the id is:
-               * a drop in the same tick as the dragover has no hint yet.
-               */
-              const box = event.currentTarget.getBoundingClientRect();
-              const offset = (event.clientY - box.top) / box.height;
-              const zone =
-                dropHint?.id === id
-                  ? dropHint.zone
-                  : offset < 0.3
-                    ? 'before'
-                    : offset > 0.7
-                      ? 'after'
-                      : 'inside';
-              onDrop(event, row._id, zone);
-            }}
-            className={cn(
-              'relative',
-              hint === 'before' &&
-                'before:absolute before:inset-x-1 before:top-0 before:z-10 before:h-0.5 before:rounded-full before:bg-brand-400',
-              hint === 'after' &&
-                'after:absolute after:inset-x-1 after:bottom-0 after:z-10 after:h-0.5 after:rounded-full after:bg-brand-400',
-              hint === 'inside' && 'ring-1 ring-inset ring-brand-400/70',
-              dragId === id && 'opacity-40'
-            )}
-          >
-            <div
-              className={cn(
-                'group/row flex items-stretch',
-                isSelected ? 'bg-brand-500/12' : 'hover:bg-white/[0.04]'
-              )}
-            >
-              {/*
-                One guide per ancestor level. Drawn as fixed-width cells with a left border rather
-                than as padding, so the rules line up exactly down the tree however deep it goes.
-              */}
-              {Array.from({ length: row.depth }, (_, level) => (
-                // eslint-disable-next-line react/no-array-index-key
-                <span
-                  key={level}
-                  aria-hidden
-                  className="w-3.5 shrink-0 border-l border-line-soft/70"
-                />
-              ))}
-
-              {editable ? (
-                <label
-                  className={cn(
-                    'grid w-5 shrink-0 cursor-pointer place-items-center transition',
-                    picked.size ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'
-                  )}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <input
-                    type="checkbox"
-                    checked={picked.has(id)}
-                    onChange={() => onPick(id)}
-                    className="size-3 accent-brand-500"
-                  />
-                </label>
-              ) : null}
-
-              {/* The twisty, or a space where one would be, so the icons line up. */}
-              {row.hasChildren && !filtering ? (
-                <button
-                  type="button"
-                  onClick={() => onToggleCollapse(id)}
-                  className="grid w-4 shrink-0 place-items-center text-fg-subtle transition hover:text-fg"
-                  aria-label={isCollapsed ? 'Expand' : 'Collapse'}
-                >
-                  {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                </button>
-              ) : (
-                <span className="w-4 shrink-0" aria-hidden />
-              )}
-
-              <button
-                type="button"
-                onClick={() => onSelect(row._id)}
-                title={row.target || row.summary || row.title || undefined}
-                className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
-              >
-                <NodeIcon row={row} collapsed={isCollapsed} />
-
-                <span className="shrink-0 font-mono text-[0.625rem] text-fg-subtle">{row.path}</span>
-
-                <span
-                  className={cn(
-                    'truncate text-xs',
-                    row.hasChildren ? 'font-semibold' : 'font-medium',
-                    row.heldBack ? 'text-fg-muted line-through decoration-fg-subtle/50' : '',
-                    isSelected ? 'text-brand-200' : 'text-fg'
-                  )}
-                >
-                  {row.title || 'Untitled step'}
-                </span>
-
-                {/* Chips, in one line, ordered by how often somebody scans for them. */}
-                <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] text-fg-subtle">
-                  {isCollapsed ? (
-                    <span
-                      className="rounded bg-white/[0.06] px-1 font-mono"
-                      title={`${inside} rows inside`}
-                    >
-                      {inside}
-                    </span>
-                  ) : null}
-                  {row.tool && full ? (
-                    <span className="max-w-[7rem] truncate font-mono text-brand-200/70">
-                      {row.tool}
-                    </span>
-                  ) : null}
-                  {outputLines ? (
-                    <span
-                      className="inline-flex items-center gap-0.5 font-mono"
-                      title={`${outputLines} lines of output`}
-                    >
-                      <Terminal size={9} />
-                      {outputLines}
-                    </span>
-                  ) : null}
-                  {row.outputStale ? (
-                    <span
-                      className="font-mono text-med/80"
-                      title={`Output is ${row.outputAge} days old — worth re-running before this ships`}
-                    >
-                      {row.outputAge}d
-                    </span>
-                  ) : null}
-                  {row.noteCount ? (
-                    <span
-                      className={cn(
-                        'inline-flex items-center gap-0.5 font-mono',
-                        row.notesStale ? 'text-med' : ''
-                      )}
-                      title={
-                        row.notesStale
-                          ? `${row.noteCount} marked line(s), ${row.notesStale} no longer in the output`
-                          : `${row.noteCount} marked line(s)`
-                      }
-                    >
-                      <MessageSquare size={9} />
-                      {row.noteCount}
-                    </span>
-                  ) : null}
-                  {row.findings?.length ? (
-                    <span
-                      className="inline-flex items-center gap-0.5 text-low"
-                      title={`Written up as ${row.findings.length} finding(s)`}
-                    >
-                      <Bug size={9} />
-                      {row.findings.length}
-                    </span>
-                  ) : null}
-                  {row.status ? (
-                    <span
-                      className={cn('size-1.5 rounded-full', STATUS_DOT[row.status])}
-                      title={STATUS_TITLE[row.status]}
-                    />
-                  ) : null}
-                </span>
-              </button>
-
-              {editable ? (
-                <button
-                  type="button"
-                  onClick={() => onAddChild(row._id)}
-                  title="Add a step under this one"
-                  className="grid w-6 shrink-0 place-items-center text-fg-subtle opacity-0 transition hover:bg-white/10 hover:text-fg focus:opacity-100 group-hover/row:opacity-100"
-                >
-                  <Plus size={12} />
-                </button>
-              ) : null}
-            </div>
-          </li>
+            row={row}
+            id={id}
+            full={full}
+            isSelected={id === idOf(selectedId)}
+            isCollapsed={collapsed.has(id)}
+            /* The answers, not the collections they came from — see the note on TreeRow. */
+            isPicked={picked.has(id)}
+            anyPicked={picked.size > 0}
+            dragging={Boolean(dragId)}
+            isDragging={dragId === id}
+            hint={dropHint?.id === id ? dropHint.zone : null}
+            inside={descendants.get(id) ?? 0}
+            place={among.get(id)}
+            filtering={filtering}
+            editable={editable}
+            moving={moving}
+            onSelect={onSelect}
+            onPick={onPick}
+            onToggleCollapse={onToggleCollapse}
+            onAddChild={onAddChild}
+            setDragId={setDragId}
+            setDropHint={setDropHint}
+            onDrop={onDrop}
+          />
         );
       })}
     </ul>

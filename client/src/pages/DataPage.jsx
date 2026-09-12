@@ -28,6 +28,7 @@ import { Input, Select, Textarea } from '../components/ui/Field.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
 import { EmptyState, ErrorState, SkeletonRows } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /**
  * Every collection on this page is a flat list with a small form, so they are
@@ -675,7 +676,7 @@ export default function DataPage() {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useUrlState('q', '');
   const [collapsed, setCollapsed] = useState(() => new Set());
 
   const spec = COLLECTIONS[active];

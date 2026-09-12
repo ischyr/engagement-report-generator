@@ -15,6 +15,7 @@ import { Button } from '../components/ui/Button.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
 import { SeverityBar } from '../components/cvss/CvssEditor.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /**
  * Engagements that are finished and put away.
@@ -32,7 +33,7 @@ export default function ArchivePage() {
   const toast = useToast();
   const { data, error, loading, reload } = useResource('/audits?archived=1', { initial: [] });
 
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useUrlState('q', '');
   const [busy, setBusy] = useState('');
 
   const list = Array.isArray(data) ? data : [];

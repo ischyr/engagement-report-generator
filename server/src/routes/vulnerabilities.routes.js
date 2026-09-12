@@ -9,6 +9,7 @@ import { requireWrite } from '../middleware/auth.js';
 import { calculateCvss, CVSS_DEFAULT_VECTOR } from '../services/cvss.js';
 import { normaliseTitle } from '../services/finding-history.service.js';
 import { mediaIdsInHtml } from '../services/media.service.js';
+import { LIST_PROJECTION, withSnippets } from '../services/library-payload.service.js';
 import { contentDisposition } from '../utils/content-disposition.js';
 
 const router = Router();
@@ -50,10 +51,24 @@ const decorate = (doc) => {
   };
 };
 
+/**
+ * The library, as a list.
+ *
+ * Without the bodies. Every entry used to arrive in full — each locale's description, impact and
+ * remediation, with whatever screenshots are in them — so that a table of titles could be drawn,
+ * and three separate callers did that: this page, the picker inside a finding, and the dashboard,
+ * which fetched the lot to show how many entries there are. The description line under each title
+ * comes from the stored `snippet` instead; see `library-payload.service.js` for why it is stored.
+ *
+ * `?search=` still reads the real text. That is the whole point of keeping it: the browser filters
+ * what it has instantly, and a search that should also match something deep inside a description
+ * asks here, where the text actually is. `?full=1` opts out of all of it.
+ */
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     const { locale, category, search, severity } = req.query;
+    const full = req.query.full === '1' || req.query.full === 'true';
     const filter = {};
     if (category) filter.category = category;
     if (locale) filter['details.locale'] = locale;
@@ -62,11 +77,27 @@ router.get(
       filter.$or = [{ 'details.title': rx }, { 'details.description': rx }, { category: rx }];
     }
 
-    let list = (await Vulnerability.find(filter).sort({ updatedAt: -1 }).limit(2000)).map(decorate);
+    const query = Vulnerability.find(filter).sort({ updatedAt: -1 }).limit(2000).lean();
+    if (!full) query.select(LIST_PROJECTION);
+    let list = (await query).map(decorate);
     // Severity is derived, so it has to be filtered after the query.
     if (severity) list = list.filter((v) => v.severity === severity);
 
     res.json(list);
+  })
+);
+
+/**
+ * How many entries there are, and nothing else.
+ *
+ * The dashboard draws one number from this. It used to fetch the entire library to call
+ * `.length` on it, which on a real library was megabytes for an integer — the single worst case
+ * of the fault the list above was fixed for.
+ */
+router.get(
+  '/count',
+  asyncHandler(async (_req, res) => {
+    res.json({ count: await Vulnerability.estimatedDocumentCount() });
   })
 );
 
@@ -231,9 +262,13 @@ router.post(
       added.push({ ...entry, createdBy: req.user._id });
     }
 
-    if (added.length) await Vulnerability.insertMany(added, { ordered: false });
+    /* Summarised on the way in, both ways: a bundle carries the prose, never the line drawn
+       from it — `forExport` leaves `snippet` out on purpose, so it is filled in here. */
+    if (added.length) {
+      await Vulnerability.insertMany(added.map(withSnippets), { ordered: false });
+    }
     for (const { _id, entry } of updates) {
-      await Vulnerability.updateOne({ _id }, { $set: forExport(entry) });
+      await Vulnerability.updateOne({ _id }, { $set: withSnippets(forExport(entry)) });
     }
 
     res.status(201).json({
@@ -260,7 +295,9 @@ router.post(
   requireWrite,
   validate(createSchema),
   asyncHandler(async (req, res) => {
-    const vulnerability = await Vulnerability.create({ ...req.body, createdBy: req.user._id });
+    const vulnerability = await Vulnerability.create(
+      withSnippets({ ...req.body, createdBy: req.user._id })
+    );
     res.status(201).json(decorate(vulnerability));
   })
 );
@@ -270,7 +307,7 @@ router.put(
   requireWrite,
   validate(createSchema.partial()),
   asyncHandler(async (req, res) => {
-    const vulnerability = await Vulnerability.findByIdAndUpdate(req.params.id, req.body, {
+    const vulnerability = await Vulnerability.findByIdAndUpdate(req.params.id, withSnippets(req.body), {
       new: true,
       runValidators: true,
     });

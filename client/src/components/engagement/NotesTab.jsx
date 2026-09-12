@@ -17,7 +17,7 @@ import { ConfirmDialog } from '../ui/Modal.jsx';
 import ConflictDialog from '../ui/ConflictDialog.jsx';
 import { EmptyState, LoadingBlock } from '../ui/Feedback.jsx';
 import { Badge } from '../ui/Badge.jsx';
-import { RichTextEditor } from '../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 
 /**
  * Working notes for an engagement: command output, credentials to try, leads not

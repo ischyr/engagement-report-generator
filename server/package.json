@@ -55,7 +55,14 @@
     "revoke:api-tokens": "node src/scripts/revoke-api-tokens.js",
     "test:live": "node src/scripts/live-test.js",
     "test:projection": "node src/scripts/projection-test.js",
-    "test:search": "node src/scripts/search-test.js"
+    "test:search": "node src/scripts/search-test.js",
+    "test:report-flow": "node src/scripts/report-flow-test.js",
+    "test:undo": "node src/scripts/undo-test.js",
+    "test:housekeeping": "node src/scripts/housekeeping-test.js",
+    "test:workbench": "node src/scripts/workbench-test.js",
+    "test:client-question": "node src/scripts/client-question-test.js",
+    "test:library": "node src/scripts/library-test.js",
+    "test:verification": "node src/scripts/verification-test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

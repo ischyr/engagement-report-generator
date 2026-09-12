@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { NotebookPen, Pin, PinOff, Plus, Save, Send, Trash2 } from 'lucide-react';
 
 import { api } from '../lib/api.js';
+import { offerUndo } from '../lib/undo.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import { useUnsavedWork } from '../context/UnsavedContext.jsx';
@@ -12,10 +13,11 @@ import { Card, CardBody, CardHeader } from '../components/ui/Card.jsx';
 import { PageHeader } from '../components/ui/Misc.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { Input } from '../components/ui/Field.jsx';
-import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
+import { Modal } from '../components/ui/Modal.jsx';
 import { EmptyState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
-import { RichTextEditor } from '../components/editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../components/editor/LazyRichTextEditor.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /**
  * Your own notes, belonging to no engagement.
@@ -42,8 +44,7 @@ export default function ScratchpadPage() {
   const [draft, setDraft] = useState({ title: '', content: '', tags: [] });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [query, setQuery] = useState('');
-  const [pendingDelete, setPendingDelete] = useState(null);
+  const [query, setQuery] = useUrlState('q', '');
   const [moving, setMoving] = useState(false);
 
   const notes = data?.notes ?? [];
@@ -85,13 +86,24 @@ export default function ScratchpadPage() {
     }
   };
 
-  const remove = async () => {
+  /**
+   * Deletes a note, and offers it back for the next few minutes.
+   *
+   * The safest thing in the app to put back: it belongs to one person, nothing references it, and
+   * it returns under its own id. Which is exactly why it should never have been behind a dialog —
+   * the scratchpad is where you throw things away, and asking permission each time is asking
+   * somebody to confirm the thing they came here to do.
+   */
+  const remove = async (note) => {
     try {
-      await api.del(`/scratch/${pendingDelete._id}`);
-      if (selectedId === pendingDelete._id) setSelectedId(null);
-      setPendingDelete(null);
+      const result = await api.del(`/scratch/${note._id}`);
+      if (selectedId === note._id) setSelectedId(null);
       await reload({ quiet: true });
-      toast.success('Note deleted');
+      offerUndo(toast, {
+        undo: result?.undo,
+        onDone: () => reload({ quiet: true }),
+        fallback: 'Note deleted',
+      });
     } catch (error) {
       toast.fromError(error);
     }
@@ -237,7 +249,7 @@ export default function ScratchpadPage() {
                     icon={Trash2}
                     title="Delete"
                     className="hover:text-crit"
-                    onClick={() => setPendingDelete(selected)}
+                    onClick={() => remove(selected)}
                   />
                   <Button
                     variant={dirty ? 'primary' : 'ghost'}
@@ -303,14 +315,6 @@ export default function ScratchpadPage() {
         </div>
       </Modal>
 
-      <ConfirmDialog
-        open={Boolean(pendingDelete)}
-        onClose={() => setPendingDelete(null)}
-        onConfirm={remove}
-        title="Delete this note?"
-        confirmLabel="Delete"
-        message={`"${pendingDelete?.title || 'Untitled'}" is only here. Nothing else has a copy.`}
-      />
     </div>
   );
 }

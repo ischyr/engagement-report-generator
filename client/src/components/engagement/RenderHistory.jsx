@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { BadgeCheck, FileClock, GitCompareArrows, ShieldQuestion, TriangleAlert } from 'lucide-react';
+import { BadgeCheck, FileClock, FileDiff, GitCompareArrows, ShieldQuestion, TriangleAlert } from 'lucide-react';
 
 import { useResource } from '../../hooks/useResource.js';
 import { formatDateTime, sha256OfFile, timeAgo } from '../../lib/utils.js';
@@ -50,6 +50,55 @@ const said = (value) => {
   if (value === null || value === undefined || value === '') return 'empty';
   return String(value);
 };
+
+/**
+ * What was different *in the report*, as opposed to in how it was produced.
+ *
+ * The list above this one answers "the template changed, and there were two more findings". This
+ * answers which two — which is the question a client's query actually turns into, and the one that
+ * used to mean opening both documents and reading.
+ *
+ * A `null` is not an empty list: a render from before content was snapshotted has nothing to
+ * compare against, and saying "no changes" about it would be a confident lie from the one feature
+ * on this screen whose whole job is to be exact.
+ */
+const CHANGE_TONE = {
+  added: { mark: '+', className: 'text-low', label: 'added' },
+  removed: { mark: '−', className: 'text-crit', label: 'removed' },
+  changed: { mark: '~', className: 'text-warn', label: 'changed' },
+};
+
+export function ContentChanges({ changes }) {
+  if (changes === null || changes === undefined) {
+    return (
+      <li className="text-xs text-fg-subtle">
+        This one predates content being recorded, so there is nothing to compare it against.
+      </li>
+    );
+  }
+  if (!changes.length) {
+    return <li className="text-xs text-fg-subtle">Nothing in the report itself was different.</li>;
+  }
+  return changes.map((change) => {
+    const tone = CHANGE_TONE[change.change] ?? CHANGE_TONE.changed;
+    return (
+      <li key={`${change.kind}:${change.id}`} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+        <span className={`font-mono ${tone.className}`} title={`${change.kind} ${tone.label}`}>
+          {tone.mark}
+        </span>
+        <span className="text-fg">{change.label}</span>
+        <span className="text-[0.625rem] text-fg-subtle">{change.kind}</span>
+        {/* Only when it moved — see the note where `wasLabel` is set. */}
+        {change.wasLabel ? (
+          <span className="text-[0.625rem] text-fg-subtle">was &ldquo;{change.wasLabel}&rdquo;</span>
+        ) : null}
+        {change.fields?.length ? (
+          <span className="text-[0.625rem] text-fg-muted">{change.fields.join(', ')}</span>
+        ) : null}
+      </li>
+    );
+  });
+}
 
 export default function RenderHistory({ audit }) {
   const { data, loading } = useResource(`/renders?audit=${audit._id}`, { initial: null });
@@ -220,9 +269,25 @@ export default function RenderHistory({ audit }) {
                     {row.changedSincePrevious.length} change
                     {row.changedSincePrevious.length === 1 ? '' : 's'}
                   </button>
-                ) : (
+                ) : null}
+                {/*
+                  Its own badge, because the two are different facts and conflating them is how
+                  "the template changed" gets read as "the report changed". This one counts what
+                  the client would notice.
+                */}
+                {row.contentChangedSincePrevious?.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setOpen(open === row.renderId ? null : row.renderId)}
+                    className="inline-flex items-center gap-1 rounded-full bg-info/12 px-1.5 py-0.5 text-[0.625rem] text-info transition hover:bg-info/20"
+                  >
+                    <FileDiff size={10} />
+                    {row.contentChangedSincePrevious.length} in the report
+                  </button>
+                ) : null}
+                {!row.changedSincePrevious?.length && !row.contentChangedSincePrevious?.length ? (
                   <Badge tone="neutral">same as the one before</Badge>
-                )}
+                ) : null}
                 <span className="ml-auto whitespace-nowrap text-[0.6875rem] text-fg-subtle" title={formatDateTime(row.at)}>
                   {timeAgo(row.at)}
                 </span>
@@ -248,7 +313,7 @@ export default function RenderHistory({ audit }) {
               {/* Opened rather than always shown: on a long job this list is dozens of rows. */}
               {open === row.renderId ? (
                 <ul className="mt-1 flex flex-col gap-1 rounded-lg border border-line-soft bg-canvas/40 px-3 py-2">
-                  {row.changedSincePrevious.map((change) => (
+                  {(row.changedSincePrevious ?? []).map((change) => (
                     <li key={change.what} className="flex flex-wrap items-baseline gap-x-2 text-xs">
                       <span className="text-fg-muted">{change.what}</span>
                       <span className="text-fg-subtle line-through">{said(change.from)}</span>
@@ -256,6 +321,12 @@ export default function RenderHistory({ audit }) {
                       <span className="text-fg">{said(change.to)}</span>
                     </li>
                   ))}
+                  {/* The report's own contents, under a rule, because the two lists answer
+                      different questions and a reader should not have to work out which is which. */}
+                  <li className="mt-1 border-t border-line-soft pt-1.5 text-[0.625rem] text-fg-subtle">
+                    In the report
+                  </li>
+                  <ContentChanges changes={row.contentChangedSincePrevious} />
                   <li className="mt-1 border-t border-line-soft pt-1.5 text-[0.625rem] text-fg-subtle">
                     Render id <span className="font-mono">{row.renderId}</span> — also inside the
                     file, under File → Info → Properties → Advanced.

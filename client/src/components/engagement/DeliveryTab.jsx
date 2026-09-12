@@ -3,6 +3,7 @@ import {
   BadgeCheck,
   CircleAlert,
   FileCheck2,
+  FileDiff,
   Fingerprint,
   Mail,
   Pencil,
@@ -15,7 +16,7 @@ import {
 import { api } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
-import RenderHistory from './RenderHistory.jsx';
+import RenderHistory, { ContentChanges } from './RenderHistory.jsx';
 import { useResource } from '../../hooks/useResource.js';
 import { displayName, formatDateTime, sha256OfFile, timeAgo } from '../../lib/utils.js';
 
@@ -119,6 +120,30 @@ export default function DeliveryTab({ audit, editable, lastGenerated }) {
   /** The send dialog, which is a different job from recording one by hand. */
   const [sendOpen, setSendOpen] = useState(false);
   const [copiesOpen, setCopiesOpen] = useState(false);
+
+  /**
+   * What has changed since one delivery went out: `{ delivery, loading, answer }`.
+   *
+   * Asked for rather than loaded with the table. The comparison matches the delivered file's hash
+   * to the render that produced it and then reads the whole engagement to itemise it — worth doing
+   * for the one row somebody is asking about, and not worth doing for six on the chance that they
+   * might.
+   */
+  const [changes, setChanges] = useState(null);
+
+  const showChanges = async (delivery) => {
+    setChanges({ delivery, loading: true, answer: null });
+    try {
+      const answer = await api.get(`/audits/${audit._id}/deliveries/${delivery._id}/changes`);
+      setChanges({ delivery, loading: false, answer });
+    } catch (error) {
+      setChanges({
+        delivery,
+        loading: false,
+        answer: { comparable: false, why: error.message || 'That could not be worked out.' },
+      });
+    }
+  };
 
   const open = (delivery) => {
     setChecked(null);
@@ -376,6 +401,20 @@ export default function DeliveryTab({ audit, editable, lastGenerated }) {
                   </TD>
                   <TD align="right">
                     <span className="flex items-center justify-end gap-1">
+                      {/*
+                        The question a client's reply turns into.
+                        They are holding this file and asking about it; what everybody then wants is
+                        not "is it current" — the hash already answered that — but which findings
+                        they have not seen. Per row rather than once for the tab, because a client
+                        who was sent 1.0 and a reviewer who was sent 1.1 are owed different answers.
+                      */}
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        icon={FileDiff}
+                        title="What has changed since this went out"
+                        onClick={() => showChanges(delivery)}
+                      />
                       {editable ? (
                         <Button
                           variant="ghost"
@@ -755,6 +794,42 @@ export default function DeliveryTab({ audit, editable, lastGenerated }) {
       <ShareLinksCard audit={audit} editable={editable} />
 
       <RenderHistory audit={audit} />
+
+      {/*
+        What the holder of one delivered file has not seen.
+
+        A dialog rather than an expanded row: the answer is a list that can run to twenty lines on a
+        report revised after a client's comments, and a table row that grows to twenty lines pushes
+        every other delivery off the screen.
+      */}
+      <Modal
+        open={Boolean(changes)}
+        onClose={() => setChanges(null)}
+        title={`Changed since version ${changes?.delivery?.version || '—'}`}
+        description={
+          changes?.delivery
+            ? `Sent ${formatDateTime(changes.delivery.sentAt)}${
+                changes.delivery.filename ? ` as ${changes.delivery.filename}` : ''
+              }.`
+            : ''
+        }
+      >
+        {changes?.loading ? (
+          <LoadingBlock label="Matching the file to the render that made it…" />
+        ) : changes?.answer?.comparable === false ? (
+          <p className="text-sm text-fg-muted">{changes.answer.why}</p>
+        ) : changes?.answer ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-[0.6875rem] text-fg-subtle">
+              Against the engagement as it stands now — not against the newest document, because
+              editing without generating is the commonest way a delivered report goes out of date.
+            </p>
+            <ul className="flex flex-col gap-1 rounded-lg border border-line-soft bg-canvas/40 px-3 py-2">
+              <ContentChanges changes={changes.answer.changed} />
+            </ul>
+          </div>
+        ) : null}
+      </Modal>
 
       <ConfirmDialog
         open={Boolean(pendingDelete)}

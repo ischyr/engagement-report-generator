@@ -36,6 +36,7 @@ const IntakePage = lazy(() => import('./pages/IntakePage.jsx'));
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage.jsx'));
 const InboxPage = lazy(() => import('./pages/InboxPage.jsx'));
+const VerificationPage = lazy(() => import('./pages/VerificationPage.jsx'));
 const InsightsPage = lazy(() => import('./pages/InsightsPage.jsx'));
 const SchedulePage = lazy(() => import('./pages/SchedulePage.jsx'));
 const SkillsPage = lazy(() => import('./pages/SkillsPage.jsx'));
@@ -211,6 +212,8 @@ export default function App() {
         <Route element={<WorkOnly />}>
           <Route index element={<DashboardPage />} />
           <Route path="inbox" element={<InboxPage />} />
+          {/* The inbox read from the other side: what the client is waiting on. */}
+          <Route path="verification" element={<VerificationPage />} />
           <Route path="insights" element={<InsightsPage />} />
           <Route path="schedule" element={<SchedulePage />} />
           <Route path="skills" element={<SkillsPage />} />

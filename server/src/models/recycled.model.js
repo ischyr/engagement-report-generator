@@ -21,7 +21,18 @@ import mongoose from 'mongoose';
  */
 const recycledSchema = new mongoose.Schema(
   {
-    audit: { type: mongoose.Schema.Types.ObjectId, ref: 'Audit', required: true, index: true },
+    /**
+     * The engagement it came out of, when it came out of one.
+     *
+     * Optional now, and that is the whole of the change: half the things a person deletes by
+     * accident are not inside an engagement at all — a scratchpad note, a time entry against no
+     * job — and those had a confirmation dialog instead of a way back, purely because this field
+     * was required. A row with no `audit` is restored through `owner` instead; one of the two is
+     * always set, which `remember` enforces.
+     */
+    audit: { type: mongoose.Schema.Types.ObjectId, ref: 'Audit', default: null, index: true },
+    /** Whose it was, for a record that belongs to a person rather than to an engagement. */
+    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     /** Which restorer puts it back. See `RESTORERS` in `recycle.service.js`. */
     kind: { type: String, required: true, trim: true, maxlength: 40 },
     /** What to call it in "X was deleted", so the toast can be specific. */

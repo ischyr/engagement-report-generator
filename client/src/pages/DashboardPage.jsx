@@ -63,7 +63,9 @@ export default function DashboardPage() {
   const { data, loading } = useResource('/dashboard', { initial: null });
   const audits = useResource('/audits', { initial: [] });
   const templates = useResource('/templates?purpose=report', { initial: [] });
-  const library = useResource('/vulnerabilities', { initial: [] });
+  /* One number. This used to fetch every entry in the library, bodies and all, to call
+     `.length` on the array — see the note on `GET /vulnerabilities/count`. */
+  const library = useResource('/vulnerabilities/count', { initial: null });
 
   const list = Array.isArray(audits.data) ? audits.data : [];
   const recent = list.slice(0, 5);
@@ -147,7 +149,7 @@ export default function DashboardPage() {
         />
         <Stat
           label="Library entries"
-          value={library.data?.length ?? 0}
+          value={library.data?.count ?? 0}
           sub="reusable vulnerabilities"
           icon={FileText}
         />

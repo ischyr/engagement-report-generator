@@ -16,6 +16,7 @@ import {
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 import { useResource } from '../hooks/useResource.js';
 import { AUDIT_STATE_META, cn, timeAgo } from '../lib/utils.js';
 
@@ -269,8 +270,15 @@ export default function EngagementsPage() {
   const { canWrite, user, isAdmin } = useAuth();
   const { data, error, loading, reload } = useResource('/audits', { initial: [] });
 
-  const [search, setSearch] = useState('');
-  const [state, setState] = useState('all');
+  /*
+   * The filters are in the address bar, not in this component.
+   *
+   * Same reasoning the engagement editor wrote down for which finding is open: state that cannot
+   * be linked to is state somebody has to describe in a sentence instead. `?state=REVIEW&attention=1`
+   * is now a thing you can send, bookmark, or get back by reloading.
+   */
+  const [search, setSearch] = useUrlState('q', '');
+  const [state, setState] = useUrlState('state', 'all');
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -288,7 +296,7 @@ export default function EngagementsPage() {
       .map(([tag]) => tag);
   }, [list]);
   /** Narrows the list to the rows the health chips have something to say about. */
-  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useUrlState('attention', false);
 
   /**
    * Tags the list is narrowed to, all of which must be present.
@@ -297,7 +305,7 @@ export default function EngagementsPage() {
    * retest", not "either". Filtered here rather than by refetching, since the list is already in
    * hand — the server-side `?tags=` filter exists for anything that comes to the API directly.
    */
-  const [tagFilter, setTagFilter] = useState([]);
+  const [tagFilter, setTagFilter] = useUrlState('tag', []);
 
   /** Anything the health chips would draw — the same rule, so the count matches the rows. */
   const needsAttention = (audit) =>

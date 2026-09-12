@@ -102,6 +102,7 @@ export const ACTIONS = {
   SHARE_LINK_REVOKED: 'share.revoked',
   /* The one action in the log that nobody with an account performed. */
   CLIENT_UPDATED_FINDING: 'client.updated',
+  CLIENT_ASKED_QUESTION: 'client.asked',
   QUESTION_ASKED: 'question.asked',
   QUESTION_SETTLED: 'question.settled',
   ITEM_RESTORED: 'item.restored',

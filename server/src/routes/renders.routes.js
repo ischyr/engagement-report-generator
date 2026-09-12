@@ -18,6 +18,7 @@ import { Audit } from '../models/audit.model.js';
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, notFound } from '../utils/http-error.js';
 import { assertMayOpen } from '../services/classification.service.js';
+import { reportSnapshot, snapshotDifferences } from '../utils/report-fingerprint.js';
 
 const router = Router();
 
@@ -135,7 +136,93 @@ router.get(
       renders: rows.map((row, index) => ({
         ...row,
         changedSincePrevious: differences(row, rows[index + 1] ?? null),
+        /*
+         * And what was different *in the report*, which `differences` cannot see.
+         *
+         * That one compares how the document was produced — template, build, settings, counts. This
+         * compares what was in it. "Findings: 12 → 14" and "these two findings are new" are
+         * different answers, and only the second one ends the conversation.
+         */
+        contentChangedSincePrevious: snapshotDifferences(
+          records[index + 1]?.snapshot ?? null,
+          records[index].snapshot ?? null
+        ),
       })),
+    });
+  })
+);
+
+/**
+ * Two renders, side by side — any two, not just consecutive ones.
+ *
+ * The register's own question is "what changed between the version they have and the one I am
+ * about to send", and those are rarely next to each other: a fortnight of drafts sits between the
+ * copy the client signed and the revision answering their comments.
+ *
+ * Both are read through their engagement, so a restricted engagement's renders stay as restricted
+ * as the engagement — and both must belong to the *same* one, because a comparison across two
+ * clients is either a mistake or an attempt to read one of them through the other.
+ */
+router.get(
+  '/compare',
+  asyncHandler(async (req, res) => {
+    const { a, b } = req.query;
+    if (!a || !b) throw badRequest('Name two renders to compare.');
+
+    const [from, to] = await Promise.all([
+      RenderRecord.findOne({ renderId: String(a) }),
+      RenderRecord.findOne({ renderId: String(b) }),
+    ]);
+    if (!from || !to) throw notFound('One of those renders is not on record.');
+    if (String(from.audit ?? '') !== String(to.audit ?? '')) {
+      throw badRequest('Those two documents are from different engagements.');
+    }
+
+    const audit = await Audit.findById(from.audit).select(
+      'name reference creator collaborators reviewers classification deletedAt'
+    );
+    if (!audit) throw notFound('Engagement not found');
+    assertMayOpen(audit, req.user);
+
+    /* Oldest first whichever way round they were named: "what changed" has a direction. */
+    const [before, after] = from.createdAt <= to.createdAt ? [from, to] : [to, from];
+    res.json({
+      before: present(before),
+      after: present(after),
+      changed: differences(present(after), present(before)),
+      contentChanged: snapshotDifferences(before.snapshot ?? null, after.snapshot ?? null),
+    });
+  })
+);
+
+/**
+ * One render against the engagement as it stands now.
+ *
+ * The delivery register's question, asked from the other end: the client is holding this document,
+ * and the honest answer to "is it still current" has until now been a yes or a no from one hash.
+ * This says which findings they have not seen.
+ *
+ * Deliberately compares against live content rather than against the newest render — somebody may
+ * not have generated anything since editing, and "nothing has changed" would then be wrong in the
+ * most confident possible way.
+ */
+router.get(
+  '/:renderId/since',
+  asyncHandler(async (req, res) => {
+    const record = await RenderRecord.findOne({ renderId: req.params.renderId });
+    if (!record) throw notFound('No record of that render.');
+    if (!record.audit) throw badRequest('That render was not of an engagement.');
+
+    const audit = await Audit.findById(record.audit);
+    if (!audit) throw notFound('Engagement not found');
+    assertMayOpen(audit, req.user);
+
+    res.json({
+      renderId: record.renderId,
+      at: record.createdAt,
+      filename: record.filename,
+      /* Null when the render predates snapshots — reported as unknown, never as unchanged. */
+      contentChanged: snapshotDifferences(record.snapshot ?? null, reportSnapshot(audit)),
     });
   })
 );

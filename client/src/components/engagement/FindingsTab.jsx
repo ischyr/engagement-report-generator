@@ -36,6 +36,7 @@ import { shrinkImage } from '../../lib/images.js';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
+import { useUrlState } from '../../hooks/useUrlState.js';
 import { useUnsaved, useUnsavedWork } from '../../context/UnsavedContext.jsx';
 import { calculateCvss, CVSS_DEFAULT_VECTOR } from '../../lib/cvss.js';
 import {
@@ -46,7 +47,6 @@ import {
   downloadBlob,
   filenameFromResponse,
   formatDate,
-  htmlToSnippet,
   isHtmlEmpty,
   timeAgo,
 } from '../../lib/utils.js';
@@ -66,7 +66,7 @@ import FindingLockBar from './FindingLockBar.jsx';
 import MergeFindingDialog from './MergeFindingDialog.jsx';
 import { Badge, SeverityBadge } from '../ui/Badge.jsx';
 import { CvssEditor } from '../cvss/CvssEditor.jsx';
-import { RichTextEditor } from '../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 import CollaborativeField from '../editor/CollaborativeField.jsx';
 import CollaborativeInput from '../editor/CollaborativeInput.jsx';
 import FindingComments from './FindingComments.jsx';
@@ -210,7 +210,6 @@ function LibraryPicker({ open, onClose, auditId, locale, onImported }) {
             {list.map((entry) => {
               const detail =
                 entry.details?.find((d) => d.locale === locale) ?? entry.details?.[0] ?? {};
-              const cvss = calculateCvss(entry.cvssv3);
               return (
                 <li key={entry._id}>
                   <button
@@ -219,9 +218,10 @@ function LibraryPicker({ open, onClose, auditId, locale, onImported }) {
                     onClick={() => importEntry(entry)}
                     className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-white/5 disabled:opacity-50"
                   >
+                    {/* Both worked out by the server, which had the vector in its hand. */}
                     <SeverityBadge
-                      severity={cvss.baseSeverity}
-                      score={cvss.baseScore}
+                      severity={entry.severity}
+                      score={entry.cvssScore}
                       className="mt-0.5 shrink-0"
                     />
                     <span className="min-w-0 flex-1">
@@ -230,7 +230,7 @@ function LibraryPicker({ open, onClose, auditId, locale, onImported }) {
                       </span>
                       <span className="mt-0.5 block truncate text-xs text-fg-muted">
                         {[entry.category, detail.vulnType].filter(Boolean).join(' · ')}
-                        {detail.description ? ` — ${htmlToSnippet(detail.description, 90)}` : ''}
+                        {detail.snippet ? ` — ${detail.snippet}` : ''}
                       </span>
                     </span>
                     {importing === entry._id ? (
@@ -1779,7 +1779,7 @@ const TRACKER_CHOICES = [
 /* Tab                                                                         */
 /* -------------------------------------------------------------------------- */
 
-export default function FindingsTab({ audit, editable, onReload, onPatch }) {
+export default function FindingsTab({ audit, editable, onReload, onPatch, onPatchRow }) {
   const toast = useToast();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -1845,9 +1845,16 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
   /** Which finding's assignee is being changed, so its control can go quiet while it saves. */
   const [assigning, setAssigning] = useState('');
   /** Whether the list is showing only what is mine. Off by default; see the toggle. */
-  const [mineOnly, setMineOnly] = useState(false);
+  const [mineOnly, setMineOnly] = useUrlState('mine', false);
   /** One tag at a time. Two would want an and/or control, which is a question nobody asked. */
-  const [tagFilter, setTagFilter] = useState('');
+  const [tagFilter, setTagFilter] = useUrlState('tag', '');
+  /**
+   * One severity, aimed here from the strip at the top of the page.
+   *
+   * In the address like the others, which is what lets the header set it from outside this
+   * component — and what makes "the criticals on this engagement" a link somebody can send.
+   */
+  const [severity, setSeverity] = useUrlState('severity', '');
 
   /**
    * Who a finding can be given to.
@@ -1893,17 +1900,24 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
     async (finding, userId) => {
       setAssigning(finding._id);
       try {
-        await api.put(`/audits/${audit._id}/findings/${finding._id}`, {
+        /*
+         * The write answers with the finding, so the list already has what it needs.
+         *
+         * This refetched the whole engagement — every other finding's write-up, every section,
+         * the checklist — to show a different name in one dropdown. On a large job that is a
+         * megabyte a click, and the click is one people make forty times while sharing work out.
+         */
+        const saved = await api.put(`/audits/${audit._id}/findings/${finding._id}`, {
           assignedTo: userId || null,
         });
-        await onReload?.({ quiet: true });
+        if (!onPatchRow?.('findings', saved)) await onReload?.({ quiet: true });
       } catch (error) {
         toast.fromError(error);
       } finally {
         setAssigning('');
       }
     },
-    [audit._id, onReload, toast]
+    [audit._id, onReload, onPatchRow, toast]
   );
 
   /* `user?.id` is what the account endpoint sends; the fallback is for a raw user row. */
@@ -1927,15 +1941,18 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
      * closes the finding you are reading is a filter nobody trusts twice, and this is also what
      * keeps the keyboard walk and the selection honest: they work on what is shown.
      */
-    if (!mineOnly && !tagFilter) return list;
+    if (!mineOnly && !tagFilter && !severity) return list;
     return list.filter(
       (finding) =>
         finding._id === selectedId ||
         ((!mineOnly ||
           String(finding.assignedTo?._id ?? finding.assignedTo ?? '') === mine) &&
-          (!tagFilter || (finding.tags ?? []).includes(tagFilter)))
+          (!tagFilter || (finding.tags ?? []).includes(tagFilter)) &&
+          /* The reported severity, not the scored one — the same rule the badge draws by, and
+             the same one the header now counts by. */
+          (!severity || (finding.severityOverride || finding._cvss.baseSeverity) === severity))
     );
-  }, [audit.findings, audit.sortFindings, mineOnly, mine, tagFilter, selectedId]);
+  }, [audit.findings, audit.sortFindings, mineOnly, mine, tagFilter, severity, selectedId]);
 
   /**
    * The tags actually in use here, most-used first.
@@ -2237,14 +2254,29 @@ export default function FindingsTab({ audit, editable, onReload, onPatch }) {
       setReordering(true);
       try {
         await api.put(`/audits/${audit._id}/findings-order`, { order: next.map((f) => f._id) });
-        await onReload({ quiet: true });
+        /*
+         * The new order is `next`, which this function just built — there is nothing to go and
+         * ask for. Written back as `sortIndex` because that is what the list sorts by when
+         * automatic ordering is off, and re-sorting from it keeps one source of truth.
+         */
+        if (onPatch) {
+          const order = new Map(next.map((finding, at) => [String(finding._id), at]));
+          onPatch({
+            findings: (audit.findings ?? []).map((finding) => ({
+              ...finding,
+              sortIndex: order.get(String(finding._id)) ?? finding.sortIndex,
+            })),
+          });
+        } else {
+          await onReload({ quiet: true });
+        }
       } catch (error) {
         toast.fromError(error);
       } finally {
         setReordering(false);
       }
     },
-    [findings, audit._id, onReload, toast]
+    [findings, audit._id, audit.findings, onReload, onPatch, toast]
   );
 
   if (selected) {

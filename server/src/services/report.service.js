@@ -1950,6 +1950,15 @@ export async function generateReport({
   phishing,
   enumerationBodies,
   copy = null,
+  /**
+   * Somewhere to say what is happening, for a caller that has somebody waiting.
+   *
+   * A no-op by default, so every existing caller — the synchronous download, the template linter,
+   * the offline smoke — is unchanged and pays nothing. The queue passes one in; the stages are the
+   * real boundaries in this function rather than a timer pretending to be progress, which means
+   * the numbers are honest about order and approximate about duration.
+   */
+  onProgress = async () => {},
 }) {
   if (!template) throw badRequest('This audit has no template assigned.');
 
@@ -1960,6 +1969,7 @@ export async function generateReport({
   const priv = resolvedSettings.report?.private ?? {};
 
   const startedAt = Date.now();
+  await onProgress('Opening the template', 20);
   const { zip, parts, numbering, buffer: templateBuffer, inheritance } = await openTemplate(template);
 
   /*
@@ -1972,6 +1982,7 @@ export async function generateReport({
    * outside the engagement document, so the scan has to be told about them or the images silently
    * do not render.
    */
+  await onProgress('Fetching the evidence', 35);
   const media = await loadMediaMap(
     mediaIdsInAudit(audit, {
       enumerationHtml: [...(enumerationBodies?.values() ?? [])].map((body) => body?.content ?? ''),
@@ -1979,6 +1990,7 @@ export async function generateReport({
   );
   const ooxmlOptions = ooxmlOptionsFor({ parts, numbering, media, pub, priv });
 
+  await onProgress('Laying out the report', 55);
   const data = buildReportData(audit, resolvedSettings, ooxmlOptions, {
     user,
     templateName: template.name ?? '',
@@ -2008,6 +2020,15 @@ export async function generateReport({
     copy,
   });
 
+  /*
+   * The last thing reported before the assembly, and the reason the number jumps here.
+   *
+   * `renderDocx` is synchronous — it fills the template, renumbers every figure and inlines every
+   * image without yielding — so nothing can be said from inside it. Announcing the step before
+   * starting it is the honest version: the message is right, and the bar sits still for as long as
+   * the work takes rather than creeping to imply progress nobody is measuring.
+   */
+  await onProgress('Assembling the document', 75);
   const buffer = renderDocx({
     zip,
     parts,

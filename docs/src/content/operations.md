@@ -8,7 +8,7 @@ Three things, in order of how much they matter.
    every start, and anybody who knows them can mint a token for any account.
 2. **Set `VAULT_KEY`, and back it up somewhere else.** Without it the credential vault stays off.
    With it, and no backup, the credentials encrypted under it are unrecoverable.
-3. **Run the suites.** They take a couple of minutes between them; the first seven want a real
+3. **Run the suites.** They take a couple of minutes between them; the first twelve want a real
    database.
 
 ```bash
@@ -18,6 +18,11 @@ npm run test:api      # the versioned API: which credential, which scope, which 
 npm run test:live     # one heartbeat carries the roster and the notifications
 npm run test:projection # a tab that reads less still answers with everything, and still refuses
 npm run test:search   # the search filters in Mongo now, and still finds every result it did
+npm run test:report-flow # a report is queued, collected, and two of them can be compared
+npm run test:undo    # a delete offers itself back, and only to whoever may take it
+npm run test:housekeeping # a finished engagement is counted, not loaded; notifications end
+npm run test:workbench # the enumeration split pane, at a real width in a browser
+npm run test:client-question # a client can ask, and never sees what the team asked
 npm run test:media    # evidence, storage, the render cache
 npm run test:charts   # the report charts, drawn and delivered
 npm run test:mail     # the message format and the SMTP conversation
@@ -26,6 +31,12 @@ npm run test:keys     # what counts as a save keystroke
 npm run test:import   # reading a findings spreadsheet
 npm run test:figures  # captioning and reordering evidence
 npm run test:findings-rows # typing beside sixty findings re-renders none of them
+npm run test:enumeration-rows # and typing beside the enumeration tree re-renders none of it
+npm run test:library  # the library lists without its prose, and still holds every word
+npm run test:library-editor # and will not save an entry it has not finished reading
+npm run test:verification # the queue of what clients said, and the wall round each engagement
+npm run test:timeline-window # the operation timeline opens on the latest ten
+npm run test:url-state # filters live in the address bar, and the columns sort
 npm run smoke         # renders a report, renders every page, checks contrast
 ```
 
@@ -204,8 +215,19 @@ npm run make:api-token -- --help                     # and the other direction
 - **Evidence is cached in memory between renders.** Safe because an image's id always means the
   same bytes — uploads are content-addressed. Bounded by total size, least recently used dropped
   first, and cleared for an image when it is deleted.
-- **Report generation happens inside the HTTP request.** A large report with many screenshots holds
-  that request open for tens of seconds. Set your proxy's timeout accordingly.
+- **Reports are generated in a queue, not inside the request.** Asking for one records a job and
+  answers immediately; a worker takes them one at a time and the page follows along, naming the
+  step it is on. Three things follow. The request no longer sits open for tens of seconds, so no
+  proxy timeout has to be raised for it. The tab can be closed — the render carries on, and the
+  document is offered when you come back, for twelve hours. And two people generating at once
+  queue instead of competing for the same single-threaded process.
+
+  Access is re-checked when the job **runs**, not only when it was asked for: a queue puts time
+  between the two, and somebody taken off an engagement in that gap must not be handed its report.
+
+  What this does not change: assembling the document is synchronous CPU work, so while it runs it
+  still occupies the process. Nobody is waiting on a socket for it any more, which was the part
+  that showed.
 - **The pipeline list is rows, not records.** Opening a proposal fetches it; the list does not carry
   every proposal's whole history.
 - **The interface is loaded a page at a time.** The whole app used to be one 1.8 MB file, so signing
@@ -236,6 +258,39 @@ npm run make:api-token -- --help                     # and the other direction
   engine rather than in Node. `npm run test:search` compares the results against what the
   unfiltered version returned, needle by needle, because a filter that loses a result looks exactly
   like a result that was never there.
+- **The dashboard reads finished work separately from live work.** It loaded every engagement
+  anybody could see, with its checklist and its findings' titles and authors, and then skipped the
+  approved ones in JavaScript — so on an instance with three years of delivered jobs, most of what
+  it fetched crossed the wire to be discarded. It is two reads now: the full projection for work
+  still going on, and six fields for work that is finished. Finished engagements are still counted
+  — they are in the totals and the severity figures, they can still be the next occurrence of
+  recurring work, and a booking can point at one — which is why this is a split and not a filter.
+- **Notifications expire.** They never did: a per-user feed, read once, kept forever, on a
+  collection every poll touches. An unread one now lives six months, and a read one a month after
+  it was read. Nothing is lost — the activity log is the permanent record of what happened; this
+  is only the part that says *you* should look. Instances that predate the change have their
+  existing notifications dated on the next boot, from when each was written rather than from now,
+  so anything already old goes at once.
+- **The editor arrives when somebody opens a field.** The rich text editor is TipTap and
+  ProseMirror — 141 kB gzipped, the largest asset after the entry chunk. Every tab that writes
+  prose imported it directly, and one of those is the findings tab, which the engagement page
+  imports statically: so opening a job to look at its scope, its hours or its delivery register
+  downloaded the whole editor first. It is behind a `lazy()` now. Opening an engagement fetches
+  nothing; opening the findings *list* fetches nothing; opening a finding fetches it once, and the
+  second finding costs nothing more. `npm run test:chunks` asserts no chunk imports it
+  statically — the difference between `from"./RichTextEditor.js"` and `import("./…")` is the
+  whole feature, so that is what is checked.
+- **A click updates the row, rather than re-reading the engagement.** `reload({ quiet: true })`
+  appears at 159 call sites, and on the engagement editor that reload is the whole engagement:
+  every finding, every section, every check. Handing a finding to somebody re-downloaded all of it
+  to show a different name in one dropdown; ticking a test check did it twice, once for the
+  checklist and once for the engagement, because the preflight panel counts unticked checks.
+
+  Those writes already answer with the row they changed, so it is applied where it belongs and
+  nothing is refetched. Not optimistic — the server's answer is still what lands — and it falls
+  back to the old reload when the row is not on the page, because a patch that quietly matched
+  nothing would leave the screen showing what it showed before.
+
 - **A findings list re-renders the row you touched.** The rows were two hundred lines of markup
   inside a loop, so all of them were rebuilt whenever anything on the tab re-rendered — every
   keystroke in the quick-capture box, every step of the `j`/`k` walk, every tick of a checkbox.
@@ -247,6 +302,40 @@ npm run make:api-token -- --help                     # and the other direction
   `content-visibility` deferral for the off-screen rows was tried and taken back out: measured in
   a real browser against the same page without it, a 65-row list laid out 80px taller than its
   true height and every row from the twenty-seventh down sat at a different offset.
+
+- **The enumeration tree re-renders the row you touched, not the tree.** The same fault as the
+  findings list, on the screen where it costs more: the workbench is a tree beside an editor, and
+  the editor's draft is state on the tab that holds both, so every keystroke in a step's write-up
+  rebuilt every row in the tree — sixty on an ordinary operation, two hundred on a large one, each
+  with its indent guides, its icon, its five chips and its drag handlers. The row is a memoised
+  component now, and it is handed answers rather than collections: `isPicked` and `isCollapsed`
+  rather than the `picked` and `collapsed` Sets, which change identity whenever anything in them
+  does. The five callbacks the tree is given are created once and read the current implementation
+  through a ref, because a dependency array for handlers that close over a dozen pieces of state
+  would be either wrong today or wrong after the next edit. `npm run test:enumeration-rows` counts
+  the renders: typing five characters in the write-up renders no rows at all, opening another step
+  renders two, folding a section renders one. Restoring a single one of the five inline arrows —
+  one prop out of twenty-three — puts all sixty rows back on every keystroke, which is what the
+  suite is there to catch.
+
+- **The vulnerability library listed its whole self.** `GET /vulnerabilities` answered with every
+  entry in full — each locale's description, impact and remediation, screenshots and all, up to two
+  thousand of them — so that a table of titles could be drawn. Three callers did that: the library
+  page, the picker inside a finding, and the dashboard, which fetched the entire library to render
+  the number of entries in it. The list now carries a stored `snippet` per locale and the bodies
+  stay in the database, the dashboard asks `GET /vulnerabilities/count`, and the editor fetches the
+  one entry it is about to edit.
+- **That snippet is stored rather than derived**, which is the only interesting decision in it.
+  Summarising a 500-entry library measured at 1.18 seconds of CPU: turning HTML into text is a parse
+  per field and there are three thousand of them. Deriving it per request would have traded bytes on
+  the wire for a second of server time, so it is written by `withSnippets` at every write path and
+  backfilled at boot — exactly as an enumeration step stores `outputPreview`. `?search=` still reads
+  the real text, which is how the page keeps searching descriptions it no longer holds.
+- **And the editor will not save an entry it has not read.** It is opened from a row, and it saves
+  whatever the form holds — so a form seeded from a row with no prose in it, saved before the entry
+  arrives, would write three empty fields over somebody's write-up. The dialog fetches the entry and
+  the save button stays disabled until it has, including when that fetch fails.
+  `npm run test:library-editor` holds it shut: with the guard removed, two of its checks fail.
 - **Indexes are not created automatically in production.** `autoIndex` is on in development and off
   when `NODE_ENV=production`, which is the right default — building an index on a large collection
   at boot is not something to discover during a deployment — but it means a fresh production

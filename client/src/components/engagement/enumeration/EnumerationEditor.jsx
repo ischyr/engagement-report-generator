@@ -34,7 +34,7 @@ import { Card, CardBody, CardHeader } from '../../ui/Card.jsx';
 import { Button } from '../../ui/Button.jsx';
 import { Input, Select, Textarea } from '../../ui/Field.jsx';
 import { Badge } from '../../ui/Badge.jsx';
-import { RichTextEditor } from '../../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../../editor/LazyRichTextEditor.jsx';
 import CollaborativeField from '../../editor/CollaborativeField.jsx';
 import CollaborativeInput from '../../editor/CollaborativeInput.jsx';
 import OutputPane from '../OutputPane.jsx';

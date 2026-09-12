@@ -721,6 +721,21 @@ export default function EnumerationTab({
    * a synthetic drag does, and what a fast real one can do — sees the old value and silently does
    * nothing. The payload is on the event that caused this, so it cannot be stale.
    */
+  /**
+   * What the tree is handed, with identities that never change.
+   *
+   * The row beside this is memoised, which does nothing at all if its props are rebuilt every
+   * render — and five of them were inline arrows. These five are created once; the ref below is
+   * rewritten on every render, so each one always calls the current implementation without ever
+   * becoming a new function.
+   */
+  const latest = useRef(null);
+  const onSelectRow = useCallback((id) => latest.current.select(id), []);
+  const onPickRow = useCallback((id) => latest.current.pick(id), []);
+  const onToggleRow = useCallback((id) => latest.current.toggle(id), []);
+  const onAddChildRow = useCallback((id) => latest.current.addChild(id), []);
+  const onDropRow = useCallback((event, targetId, zone) => latest.current.drop(event, targetId, zone), []);
+
   const onDrop = (event, targetId, zone) => {
     const source = event.dataTransfer?.getData('text/plain') || dragId;
     if (!source) return;
@@ -793,6 +808,33 @@ export default function EnumerationTab({
     Boolean(selected?.hasContent);
   const isSection = Boolean(selected?.hasChildren);
   const runVisible = !isSection || hasRunDetails || showRunFields;
+
+  /*
+   * The box the five stable callbacks above read through, rewritten on every render.
+   *
+   * Above the early return rather than below it, so it is never left holding the implementations
+   * from a render that happened before the tree existed. Nothing here is a dependency of anything;
+   * that is the point.
+   */
+  latest.current = {
+    select: (id) => guard(() => setSelectedId(id)),
+    pick: (id) =>
+      setPicked((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    toggle: (id) =>
+      setCollapsed((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    addChild: (id) => create(id),
+    drop: onDrop,
+  };
 
   if (loading) return <LoadingBlock label="Loading enumeration…" />;
 
@@ -1145,7 +1187,21 @@ export default function EnumerationTab({
           className={cn('grid', asPage ? 'gap-0' : 'gap-4 lg:grid-cols-[19rem_1fr]')}
           style={
             asPage
-              ? { gridTemplateColumns: treeHidden ? '0 0 1fr' : `${paneWidth}px 5px 1fr` }
+              ? {
+                  /*
+                   * One column when the tree is away, not three with the first two at zero.
+                   *
+                   * `0 0 1fr` looks like the careful version and is the bug: the tree and the
+                   * handle are `display: none` when hidden, and a grid does not place boxes that
+                   * do not exist. So the editor auto-placed into the *first* column — the 0 —
+                   * while the 1fr sat empty beside it, and the workbench rendered two pixels wide
+                   * with every word on its own line.
+                   *
+                   * With a single track the editor is the only item that generates a box, lands in
+                   * column one, and takes the room.
+                   */
+                  gridTemplateColumns: treeHidden ? '1fr' : `${paneWidth}px 5px 1fr`,
+                }
               : undefined
           }
         >
@@ -1195,34 +1251,23 @@ export default function EnumerationTab({
                 rows={rows}
                 visible={visible}
                 selectedId={selectedId}
-                onSelect={(id) => guard(() => setSelectedId(id))}
+                /* The five below never change identity — see `latest` above. An inline arrow
+                   here would hand every row a new prop on every keystroke in the editor, which is
+                   exactly what the memo on the row exists to stop. */
+                onSelect={onSelectRow}
                 picked={picked}
-                onPick={(id) =>
-                  setPicked((current) => {
-                    const next = new Set(current);
-                    if (next.has(id)) next.delete(id);
-                    else next.add(id);
-                    return next;
-                  })
-                }
+                onPick={onPickRow}
                 collapsed={collapsed}
-                onToggleCollapse={(id) =>
-                  setCollapsed((current) => {
-                    const next = new Set(current);
-                    if (next.has(id)) next.delete(id);
-                    else next.add(id);
-                    return next;
-                  })
-                }
+                onToggleCollapse={onToggleRow}
                 filtering={filtering}
                 editable={editable}
                 moving={moving}
-                onAddChild={(id) => create(id)}
+                onAddChild={onAddChildRow}
                 dragId={dragId}
                 setDragId={setDragId}
                 dropHint={dropHint}
                 setDropHint={setDropHint}
-                onDrop={onDrop}
+                onDrop={onDropRow}
                 variant={asPage ? 'full' : 'compact'}
               />
             </div>

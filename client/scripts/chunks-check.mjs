@@ -82,8 +82,41 @@ console.log('\nWhat a browser downloads before it can show a password box:');
    * plugins. Nobody signing in should be given it, so it having its own chunk is the specific
    * property worth asserting rather than inferring from the total.
    */
-  const editor = chunks.find((name) => /RichTextEditor|tiptap|prosemirror/i.test(name));
+  const editor = chunks.find((name) => /^RichTextEditor-/.test(name));
   check('the rich text editor is not in the entry chunk', Boolean(editor), 'no editor chunk found');
+
+  /*
+   * And it is not in the engagement page's either, which is the next door along.
+   *
+   * Having its own chunk was never the whole question. Every tab that writes prose imported the
+   * editor directly, and one of those is `FindingsTab`, which the engagement page imports
+   * statically — so the chunk existed, sat outside the entry, and was fetched anyway the moment
+   * somebody opened a job to look at its scope. 144 kB gzipped, for a page with no editor on it.
+   *
+   * A static import compiles to `from"./RichTextEditor-hash.js"`; the lazy one compiles to
+   * `import("./RichTextEditor-hash.js")`. The difference between those two strings is the whole
+   * feature, so that is what is asserted — and the wrapper is excluded by name, because
+   * `LazyRichTextEditor-*.js` is a few hundred bytes and is *supposed* to load eagerly.
+   */
+  if (editor) {
+    const eager = chunks.filter((name) => {
+      if (name === editor || /^LazyRichTextEditor-/.test(name)) return false;
+      const text = fs.readFileSync(path.join(DIST, 'assets', name), 'utf8');
+      return text.includes(`from"./${editor}"`);
+    });
+    check(
+      'and nothing loads it eagerly — it arrives when somebody opens a field',
+      eager.length === 0,
+      `statically imported by ${eager.join(', ')}`
+    );
+
+    const bytes = fs.statSync(path.join(DIST, 'assets', editor)).size;
+    const gz = gzipSync(fs.readFileSync(path.join(DIST, 'assets', editor))).length;
+    console.log(
+      `        (the editor is ${(bytes / 1024).toFixed(0)} kB, ${(gz / 1024).toFixed(1)} kB gzipped — ` +
+        `what opening an engagement no longer costs)`
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ browser --- */

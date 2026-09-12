@@ -17,7 +17,7 @@ import ConflictDialog from '../ui/ConflictDialog.jsx';
 import { EmptyState } from '../ui/Feedback.jsx';
 import { Badge } from '../ui/Badge.jsx';
 import { TagChip } from '../ui/Misc.jsx';
-import { RichTextEditor } from '../editor/RichTextEditor.jsx';
+import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 import CollaborativeField from '../editor/CollaborativeField.jsx';
 import AssistantAction from '../assistant/AssistantAction.jsx';
 

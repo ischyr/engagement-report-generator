@@ -102,7 +102,16 @@ export async function readShareLink(token) {
     select:
       'name reference auditType date date_start date_end state deletedAt company findings ' +
       /* For the status view: coverage comes off the scope, and "as of" off the timestamps. */
-      'scope updatedAt detailsUpdatedAt',
+      'scope updatedAt detailsUpdatedAt ' +
+      /*
+       * And the questions, for the ones the client asked themselves.
+       *
+       * The whole array, because a projection cannot filter inside one — so everything below has
+       * to be careful: this holds the team's own questions about this client, and `clientView`
+       * lets through only those whose `fromClient` is set. A question with no such mark is ours
+       * and is never rendered for them.
+       */
+      'questions',
     populate: { path: 'company', select: 'name' },
   });
   if (!row || !row.audit || row.audit.deletedAt) return null;
@@ -158,6 +167,30 @@ export function clientView(link, cvssColors = {}) {
          * same empty box on their next visit and cannot tell whether it arrived. Their own words
          * and their own attachments only — nothing the team has written about the claim.
          */
+        /**
+         * What they asked about this finding, and what we said.
+         *
+         * Theirs only — `fromClient` is what a question gets when it arrives through a link, and
+         * an unmarked question is one the team wrote to ask *them*, frequently in words meant for
+         * colleagues. Their own text and our answer, and not the internal status, the author or
+         * anything else the record carries.
+         *
+         * Read back for the same reason the claim is: a box that forgets what you put in it looks
+         * broken, and a question that vanishes on refresh looks unheard.
+         */
+        questions: (audit.questions ?? [])
+          .filter(
+            (question) =>
+              question.fromClient &&
+              String(question.context ?? '') === String(finding._id)
+          )
+          .map((question) => ({
+            _id: String(question._id),
+            text: question.text ?? '',
+            askedAt: question.createdAt ?? null,
+            answer: question.status === 'answered' ? (question.answer ?? '') : '',
+            answeredAt: question.status === 'answered' ? (question.answeredAt ?? null) : null,
+          })),
         claim: finding.clientClaim?.status
           ? {
               status: finding.clientClaim.status,

@@ -197,12 +197,32 @@ const ANSWERS = {
   '/audits/x/tags': [],
 };
 
+/** Every request the mounted tree has made, so a click can be priced. */
+const calls = [];
+
 globalThis.fetch = async (url, init = {}) => {
   const at = String(url)
     .replace(/^https?:\/\/[^/]+/, '')
     .replace(/^\/api/, '')
     .replace(/\?.*$/, '');
-  if ((init.method ?? 'GET').toUpperCase() !== 'GET') {
+  const method = (init.method ?? 'GET').toUpperCase();
+  calls.push(`${method} ${at}`);
+  if (method !== 'GET') {
+    /*
+     * The finding update answers with the finding, which is what lets the list patch itself
+     * instead of refetching. Answering 204 here would send it down the fallback path and the
+     * assertion below would pass for the wrong reason.
+     */
+    if (at.startsWith('/audits/x/findings/')) {
+      const body = { _id: at.split('/').pop(), title: 'Finding number 1', assignedTo: marijke };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      };
+    }
     return { ok: true, status: 204, headers: { get: () => null }, text: async () => '' };
   }
   const body = ANSWERS[at];
@@ -443,6 +463,39 @@ console.log('\nAnd the rows still say everything they said before the extraction
     rows()[FINDING_COUNT - 1].querySelector('button[aria-label="Move down"]')?.disabled === true
   );
   check('no errors after all of that', problems.length === 0, problems.slice(0, 2).join(' | '));
+}
+
+console.log('\nHanding a finding to somebody costs one request, not two:');
+{
+  const before = calls.length;
+  const selects = rows().map((row) => row.querySelector('select')).filter(Boolean);
+  check('the assignee dropdowns are there', selects.length > 0, String(selects.length));
+
+  await act(async () => {
+    const target = selects[0];
+    target.value = 'u2';
+    target.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+
+  const since = calls.slice(before);
+  check(
+    'it sends the write',
+    since.filter((line) => /^PUT \/audits\/x\/findings\//.test(line)).length === 1,
+    since.join(' | ') || 'nothing'
+  );
+  check(
+    '  and does not refetch the engagement behind it',
+    since.filter((line) => /^GET \/audits\/x$/.test(line)).length === 0,
+    since.join(' | ')
+  );
+  check(
+    '  one request in total, where there used to be two',
+    since.length === 1,
+    `${since.length}: ${since.join(' | ')}`
+  );
 }
 
 /* -------------------------------------------------------------------------- */

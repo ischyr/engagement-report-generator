@@ -2,7 +2,7 @@
   "name": "engy-report",
   "private": true,
   "version": "1.0.0",
-  "description": "Engy Report \u2014 a modular pentest engagement report generator driven by .docx templates",
+  "description": "Engy Report — a modular pentest engagement report generator driven by .docx templates",
   "type": "module",
   "workspaces": [
     "server",
@@ -80,7 +80,18 @@
     "test:live-poll": "npm run test:live-poll --workspace client",
     "test:projection": "npm run test:projection --workspace server",
     "test:search": "npm run test:search --workspace server",
-    "test:findings-rows": "npm run test:findings-rows --workspace client"
+    "test:findings-rows": "npm run test:findings-rows --workspace client",
+    "test:enumeration-rows": "npm run test:enumeration-rows --workspace client",
+    "test:library": "npm run test:library --workspace server",
+    "test:library-editor": "npm run test:library-editor --workspace client",
+    "test:timeline-window": "npm run test:timeline-window --workspace client",
+    "test:verification": "npm run test:verification --workspace server",
+    "test:report-flow": "npm run test:report-flow --workspace server",
+    "test:url-state": "npm run test:url-state --workspace client",
+    "test:undo": "npm run test:undo --workspace server",
+    "test:housekeeping": "npm run test:housekeeping --workspace server",
+    "test:workbench": "npm run test:workbench --workspace server",
+    "test:client-question": "npm run test:client-question --workspace server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

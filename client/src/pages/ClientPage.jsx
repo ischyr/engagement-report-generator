@@ -73,39 +73,47 @@ export default function ClientPage() {
           </Link>
         }
         title={company.name}
-        actions={
-          /*
-            Only once there is something to compare. A programme page for a single engagement
-            would be a chart with one bar on it and a heading that cannot say anything.
-          */
-          engagements.length > 1 ? (
-            <Button
-              as={Link}
-              to={`/clients/${company._id}/programme`}
-              variant="secondary"
-              size="sm"
-              icon={TrendingUp}
-            >
-              The programme
-            </Button>
-          ) : null
-        }
         description={
           [company.shortName, company.address].filter(Boolean).join(' · ') ||
           'No address on file'
         }
+        /*
+          Both of these, in one prop.
+
+          They were two `actions` on the same element. JSX keeps the last one, so the programme
+          button — the whole cross-engagement view for this client — has never rendered, and
+          nothing warned about it because nothing can: a duplicated prop is legal and silent.
+          `npm run smoke:client` now refuses one.
+        */
         actions={
-          company.website ? (
-            <a
-              href={/^https?:/i.test(company.website) ? company.website : `https://${company.website}`}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-line-soft px-3 py-2 text-xs text-fg-muted transition hover:border-brand-500/40 hover:text-fg"
-            >
-              <ExternalLink size={13} />
-              {company.website.replace(/^https?:\/\//i, '')}
-            </a>
-          ) : null
+          <>
+            {/*
+              Only once there is something to compare. A programme page for a single engagement
+              would be a chart with one bar on it and a heading that cannot say anything.
+            */}
+            {engagements.length > 1 ? (
+              <Button
+                as={Link}
+                to={`/clients/${company._id}/programme`}
+                variant="secondary"
+                size="sm"
+                icon={TrendingUp}
+              >
+                The programme
+              </Button>
+            ) : null}
+            {company.website ? (
+              <a
+                href={/^https?:/i.test(company.website) ? company.website : `https://${company.website}`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line-soft px-3 py-2 text-xs text-fg-muted transition hover:border-brand-500/40 hover:text-fg"
+              >
+                <ExternalLink size={13} />
+                {company.website.replace(/^https?:\/\//i, '')}
+              </a>
+            ) : null}
+          </>
         }
       />
 

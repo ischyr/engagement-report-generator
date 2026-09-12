@@ -22,6 +22,7 @@ import { StateBadge } from '../components/ui/Badge.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /** Roles read as labels rather than raw field names. */
 const ROLE_LABEL = {
@@ -333,8 +334,8 @@ export default function TeamPage() {
   const { data, error, loading, reload } = useResource(`/users/engagements?days=${range}`, {
     initial: null,
   });
-  const [view, setView] = useState('people');
-  const [search, setSearch] = useState('');
+  const [view, setView] = useUrlState('view', 'people');
+  const [search, setSearch] = useUrlState('q', '');
   /** Which engagement cards the reader has opened. */
   const [openIds, setOpenIds] = useState(() => new Set());
 

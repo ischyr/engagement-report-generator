@@ -15,6 +15,7 @@ import { Input } from '../components/ui/Field.jsx';
 import { Modal } from '../components/ui/Modal.jsx';
 import { EmptyState, ErrorState, SkeletonRows } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 /**
  * The handoff to whoever raises the invoices.
@@ -47,7 +48,7 @@ const amountText = (amount, currency) => {
 
 export default function SalesInvoicingPage() {
   const toast = useToast();
-  const [view, setView] = useState('outstanding');
+  const [view, setView] = useUrlState('view', 'outstanding');
   const [marking, setMarking] = useState(null);
   const [invoiceRef, setInvoiceRef] = useState('');
   const [po, setPo] = useState('');

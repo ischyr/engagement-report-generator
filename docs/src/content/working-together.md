@@ -1,5 +1,52 @@
 # Working together
 
+## Filters are links
+
+Every list — engagements, the library, clients, templates, the team, the archive — keeps its
+search, its status filter and its tags in the address bar. So a filtered view is a thing you can
+reload, bookmark, and paste into a message: `/engagements?state=REVIEW&attention=1` is "the ones
+in review that need somebody", and it arrives that way for whoever opens it.
+
+Anything left at its default is not written, so the address stays empty until you actually narrow
+something, and then says exactly what you narrowed.
+
+The same goes for the column headings on Users, Templates and the library: clicking one sorts by
+it, clicking again reverses it, and `?sort=seen&dir=desc` travels with the link. Blanks stay at
+the bottom in both directions — "last signed in, newest first" is asking who was here recently,
+not listing everyone who never has.
+
+On an engagement, the severity counts above the tabs are buttons. **Critical 17** opens the
+findings list showing those seventeen — and they are counted the way the list shows them, so a
+finding scored Critical and reported Medium is under Medium in both places.
+
+## The keyboard
+
+Press **?** anywhere for the list. Briefly:
+
+| | |
+|---|---|
+| `Ctrl`/`⌘` + `K` | search everything — engagements, findings, notes, clients |
+| `Ctrl`/`⌘` + `S` | save whatever is open and unsaved, wherever you are |
+| `j` `k` or `↑` `↓` | walk the findings list |
+| `Enter` or `o` | open the one under the cursor |
+| `e` | open it to write |
+| `Shift` + click | tick every finding between this one and the last |
+| `Esc` | close a dialog, or put the list cursor away |
+
+The sheet does not open while you are typing, so a question mark in a note stays a question mark.
+
+## Undoing a deletion
+
+Deleting something small no longer asks first. It happens, and a toast offers it back for the next
+ten minutes — a note, a question, a section, a test check, a credential, a kit item, a detection
+event, a scope change, a handover, an enumeration step, a row of hours, a scratchpad note. What
+comes back is the record itself, under its own id and in its old position, so anything that
+referenced it still does.
+
+Some things still ask, and deliberately: removing a delivery record, revoking a session or an API
+token, purging the trash, deleting a template or a client. Those are decisions rather than
+mis-clicks, and for several of them "put it back" would not mean what it says.
+
 Two people on one engagement is the normal case, not the exception. Everything here exists so that
 neither of them loses work, and so that neither has to ask the other what they are doing.
 
@@ -160,6 +207,10 @@ and an assignment pointing at them would sit in a queue they never see.
 "What have I got left to write up" is answered on the **Inbox** page, which lists every finding
 that is yours across every engagement, worst first, above the checks and the comments — writing a
 finding is hours, and a comment is minutes.
+
+**Verification** is the same page read from the other side: not what needs you, but what a *client*
+has been waiting on — a finding they marked fixed that nobody has retested, a question they asked
+through their link that nobody has answered. See [The client link](/client-link).
 
 ## Right now
 

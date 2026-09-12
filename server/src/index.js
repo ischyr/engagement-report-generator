@@ -11,6 +11,7 @@ import { backfillApprovals } from './services/account-approval.service.js';
 import { renameFinanceRoleToSales } from './services/role-rename.service.js';
 import { backfillTemplatePurpose } from './services/template-purpose.service.js';
 import { backfillRoles } from './services/roles-migration.service.js';
+import { backfillLibrarySnippets } from './services/library-migration.service.js';
 import { backfillRedTeamKind } from './services/redteam-kind.service.js';
 import {
   moveEnumerationText,
@@ -18,6 +19,8 @@ import {
 } from './services/enumeration-move.service.js';
 import { installNotificationMail } from './services/notification-mail.service.js';
 import { installWebhooks } from './services/webhooks/index.js';
+import { installRenderQueue } from './services/render-queue.service.js';
+import { backfillNotificationExpiry } from './services/notification-expiry.service.js';
 import { log } from './utils/logger.js';
 
 async function main() {
@@ -36,6 +39,15 @@ async function main() {
    * are a line somebody can find rather than a side effect of an import.
    */
   installWebhooks();
+  /*
+   * And the report worker, which is the third of these and the only one that does work rather than
+   * listens for it.
+   *
+   * Here rather than at import time so the seeder and the migrations do not acquire a background
+   * renderer, and here rather than lazily so that jobs left `running` by a process that died are
+   * put back in the queue at the one moment it is safe to assume nobody is working on them.
+   */
+  installRenderQueue();
 
   // Before the first request, not alongside it: an engagement whose approvals are
   // still bare user ids cannot be hydrated, so this is a load-bearing migration
@@ -97,6 +109,25 @@ async function main() {
    * Matches nothing once an install has been through it.
    */
   await repairContentFlags();
+
+  /*
+   * And notifications written before they had an expiry.
+   *
+   * A TTL index skips documents with no such field, so without this the collection would keep
+   * growing on exactly the installs that have most to clear. Matches nothing after the first boot.
+   */
+  await backfillNotificationExpiry();
+
+  /*
+   * And library entries written before a list had a line to draw under each title.
+   *
+   * The snippet is stored because deriving one per request measured at over a second on a
+   * five-hundred-entry library — see `library-payload.service.js`. Stored means every entry
+   * already here has none, and would list with a blank line that reads exactly like a description
+   * nobody wrote. The only migration of the set that cannot be a pipeline: HTML becomes text in
+   * Node, not in Mongo. Matches nothing after the first boot.
+   */
+  await backfillLibrarySnippets();
 
   const app = createApp();
   const server = app.listen(env.port, () => {

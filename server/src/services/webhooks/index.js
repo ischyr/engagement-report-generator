@@ -123,6 +123,9 @@ export const EVENT_GROUPS = {
     hint: 'The client marks something fixed through their link, or a question is asked or settled.',
     actions: {
       [ACTIONS.CLIENT_UPDATED_FINDING]: true,
+      /* And the question they asked through the link, which is the same kind of news: something
+         happened at a moment when nobody on the team was looking at the app. */
+      [ACTIONS.CLIENT_ASKED_QUESTION]: true,
       [ACTIONS.QUESTION_ASKED]: true,
       [ACTIONS.QUESTION_SETTLED]: true,
     },

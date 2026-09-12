@@ -12,7 +12,22 @@ export function PageHeader({ title, description, actions, breadcrumb, className 
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-fg-muted">{description}</p>
         ) : null}
       </div>
-      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+      {/*
+        `ml-auto` as well as the `justify-between` above, which only looks redundant.
+
+        `justify-between` puts the title and the actions at opposite ends — of the line they share.
+        Once the two together are wider than the header, the actions wrap onto a line of their own,
+        and a flex line with one item on it starts at the beginning: the row of controls slid to
+        the left edge under the title, which on an engagement is seven of them across the page.
+
+        A left margin of `auto` is per-item rather than per-line, so it holds them right whether
+        they wrapped or not.
+      */}
+      {actions ? (
+        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {actions}
+        </div>
+      ) : null}
     </header>
   );
 }

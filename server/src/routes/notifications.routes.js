@@ -9,7 +9,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { Notification } from '../models/notification.model.js';
+import {
+  Notification,
+  READ_TTL_MS,
+  UNREAD_TTL_MS,
+} from '../models/notification.model.js';
 import asyncHandler from '../utils/async-handler.js';
 import { notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
@@ -58,6 +62,16 @@ router.post(
 
     notification.read = req.body.read;
     notification.readAt = req.body.read ? new Date() : null;
+    /*
+     * Reading it shortens its life; marking it unread again gives the time back.
+     *
+     * Both directions, because this route does both — a notification put back to unread is one
+     * somebody means to return to, and expiring it a month later on the strength of a click they
+     * undid would be the opposite of what they asked for.
+     */
+    notification.expiresAt = new Date(
+      Date.now() + (req.body.read ? READ_TTL_MS : UNREAD_TTL_MS)
+    );
     await notification.save();
     res.json(notification);
   })
@@ -68,7 +82,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const result = await Notification.updateMany(
       { user: req.user._id, read: false },
-      { $set: { read: true, readAt: new Date() } }
+      { $set: { read: true, readAt: new Date(), expiresAt: new Date(Date.now() + READ_TTL_MS) } }
     );
     res.json({ ok: true, marked: result.modifiedCount ?? 0 });
   })

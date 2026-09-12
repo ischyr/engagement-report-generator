@@ -35,6 +35,7 @@ import {
   isDeep,
   levelOf,
 } from '../components/team/skills-meta.js';
+import { useUrlState } from '../hooks/useUrlState.js';
 
 const VIEWS = [
   { value: 'people', label: 'People', icon: Users },
@@ -65,11 +66,11 @@ export default function SkillsPage() {
   const { user, isAdmin } = useAuth();
   const { data, error, loading, reload } = useResource('/users/skills', { initial: null });
 
-  const [view, setView] = useState('people');
-  const [search, setSearch] = useState('');
+  const [view, setView] = useUrlState('view', 'people');
+  const [search, setSearch] = useUrlState('q', '');
   const [skillFilter, setSkillFilter] = useState('');
   const [levelFilter, setLevelFilter] = useState('');
-  const [sort, setSort] = useState('depth');
+  const [sort, setSort] = useUrlState('sort', 'depth');
   const [editing, setEditing] = useState(null);
   const [inspecting, setInspecting] = useState(null);
 

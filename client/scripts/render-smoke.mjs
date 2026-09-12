@@ -56,6 +56,7 @@ const authValue = {
 const PAGES = [
   ['DashboardPage', '/src/pages/DashboardPage.jsx', '/'],
   ['InboxPage', '/src/pages/InboxPage.jsx', '/inbox'],
+  ['VerificationPage', '/src/pages/VerificationPage.jsx', '/verification'],
   ['InsightsPage', '/src/pages/InsightsPage.jsx', '/insights'],
   ['SchedulePage', '/src/pages/SchedulePage.jsx', '/schedule'],
   ['SkillsPage', '/src/pages/SkillsPage.jsx', '/skills'],
@@ -734,6 +735,73 @@ console.log('\nEvery call into the API client names a method it has:');
       failures += 1;
       console.log(`  FAIL  ${offenders.length} call(s) the client cannot answer: ${offenders.join('; ')}`);
     }
+  }
+}
+
+console.log('\nNo element is handed the same prop twice:');
+{
+  /*
+   * The bug this exists for: `<PageHeader>` on the client page was given `actions` twice, ten
+   * lines apart. JSX keeps the last one, so the first — the button to the whole cross-engagement
+   * programme view — never rendered. Nothing warned, because nothing can: a duplicated prop is
+   * legal JavaScript, the build is happy, and the page looks finished. It is only wrong if you
+   * know the button is supposed to be there.
+   *
+   * Deliberately crude. It reads elements written in this codebase's own shape — an open tag on
+   * its own line, props one indent in — rather than parsing JSX properly, because it does not
+   * have to be right about arbitrary input, only about the code in this folder. A shape it does
+   * not recognise is skipped, which is the safe direction: this finds duplicates or it finds
+   * nothing, and it never invents one.
+   */
+  const files = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const at = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(at);
+      else if (/\.jsx$/.test(entry.name)) files.push(at);
+    }
+  };
+  walk(path.resolve(root, 'src'));
+
+  const duplicates = [];
+  for (const at of files) {
+    const lines = fs.readFileSync(at, 'utf8').split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      const open = /^(\s*)<([A-Za-z][\w.]*)\s*$/.exec(lines[index]);
+      if (!open) continue;
+      const indent = open[1].length;
+      const seen = new Map();
+
+      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+        const line = lines[cursor];
+        const at_ = line.search(/\S/);
+        /* The element's own closing `>` or `/>`, back at its indentation, ends it. */
+        if (at_ <= indent && /^\s*\/?>\s*$/.test(line)) break;
+        if (at_ <= indent && line.trim()) break;
+        /* A prop of *this* element is a `name={` or `name="` exactly one indent in. Anything
+           deeper belongs to something nested and is none of this check's business. */
+        const prop = /^\s*([a-zA-Z][\w]*)=[{"]/.exec(line);
+        if (prop && at_ === indent + 2) {
+          seen.set(prop[1], (seen.get(prop[1]) ?? 0) + 1);
+        }
+      }
+
+      for (const [name, count] of seen) {
+        if (count > 1) {
+          duplicates.push(
+            `${path.relative(root, at).replace(/\\/g, '/')}:${index + 1} <${open[2]}> passes "${name}" ${count} times`
+          );
+        }
+      }
+    }
+  }
+
+  if (duplicates.length === 0) {
+    passes += 1;
+    console.log(`  PASS  ${files.length} components, no element given a prop twice`);
+  } else {
+    failures += 1;
+    console.log(`  FAIL  the earlier one is silently discarded: ${duplicates.join('; ')}`);
   }
 }
 

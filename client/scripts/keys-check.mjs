@@ -9,6 +9,7 @@
  * line in `isSaveShortcut`, so each is a line here.
  */
 import { createServer } from 'vite';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -113,6 +114,66 @@ check('and so is one in a rich-text editor', listKey(listEvent({ target: { close
 check('and one inside a dialog over the list', isTyping(inField) === true);
 check('⌘K stays the search palette', listKey(listEvent({ key: 'k', metaKey: true })) === null);
 check('a composed character is the IME’s', listKey(listEvent({ isComposing: true })) === null);
+
+
+/* -------------------------------------------------------------------------- */
+/* The sheet that tells people any of this exists                             */
+/* -------------------------------------------------------------------------- */
+
+console.log('\nThe shortcuts sheet:');
+{
+  const source = fs.readFileSync(
+    path.join(root, 'src/components/layout/ShortcutsDialog.jsx'),
+    'utf8'
+  );
+
+  check('it opens on ?', /event\.key !== '\?'/.test(source), 'no ? binding found');
+  check(
+    '  and not while somebody is typing',
+    /isTyping\(event\.target\)/.test(source),
+    'the sheet would open over a note somebody is writing'
+  );
+  check(
+    '  and it is mounted in the shell, not on a page',
+    /<ShortcutsDialog \/>/.test(
+      fs.readFileSync(path.join(root, 'src/components/layout/AppShell.jsx'), 'utf8')
+    ),
+    'not mounted'
+  );
+
+  /*
+   * Every key `listKey` answers to has to appear in the sheet.
+   *
+   * Read out of the implementation rather than typed here, so adding a case to `listKey` and
+   * forgetting the sheet fails this rather than shipping a list that is quietly incomplete.
+   */
+  const keysSource = fs.readFileSync(path.join(root, 'src/lib/keys.js'), 'utf8');
+  const listKeyBody = keysSource.slice(
+    keysSource.indexOf('export function listKey'),
+    keysSource.indexOf('export default')
+  );
+  const cases = [...listKeyBody.matchAll(/case '([^']+)':/g)].map((match) => match[1]);
+  check(`listKey answers to ${cases.length} keys`, cases.length >= 7, cases.join(', '));
+
+  /** How each key is written in the sheet, where an arrow is a glyph rather than a name. */
+  const written = { ArrowDown: '\u2193', ArrowUp: '\u2191', Escape: 'Esc' };
+  const missing = cases.filter((key) => {
+    const shown = written[key] ?? key;
+    return !source.includes(`'${shown}'`) && !source.includes(`[['${shown}']`);
+  });
+  check(
+    'and the sheet names every one of them',
+    missing.length === 0,
+    `not described: ${missing.join(', ')}`
+  );
+
+  /* The save label comes from the same helper the tooltips use, so a Mac reads ⌘S. */
+  check(
+    'the save key is written as the machine types it',
+    source.includes('saveShortcutLabel()'),
+    'hard-coded, so it will be wrong on one platform or the other'
+  );
+}
 
 await vite.close();
 console.log(`\nRESULT: ${passed} passed, ${failed} failed`);

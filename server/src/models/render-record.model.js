@@ -120,6 +120,23 @@ const renderRecordSchema = new mongoose.Schema(
      */
     inheritedFrom: { type: String, default: '' },
     inheritedParts: { type: [String], default: [] },
+
+    /**
+     * The report's content, itemised and hashed, as it stood when this was produced.
+     *
+     * `counts` answers "eleven findings, not nine"; this answers *which two*. Two of these subtract
+     * to a list of facts — these findings are new, this one was rescored, the executive summary was
+     * rewritten — which is the question asked every time a client queries a revision and the one
+     * nothing could answer, because a render keeps no copy of the document it made.
+     *
+     * A few kilobytes on a large engagement: ten hex characters per field, no prose. Cheap enough
+     * to keep on every render, which matters because the useful comparison is nearly always against
+     * a render nobody knew would be interesting at the time.
+     *
+     * Null on records written before this was kept, and reported as "cannot be compared" rather
+     * than as "nothing changed" — see `snapshotDifferences`.
+     */
+    snapshot: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 );

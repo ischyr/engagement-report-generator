@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { Audit } from '../models/audit.model.js';
 import { Booking } from '../models/booking.model.js';
 import { TimeEntry, HOURS_PER_DAY } from '../models/time-entry.model.js';
+import { remember } from '../services/recycle.service.js';
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
@@ -222,8 +223,22 @@ router.delete(
   asyncHandler(async (req, res) => {
     if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
     const entry = await loadOwnEntry(req);
+    /*
+     * Remembered before it goes, and offered back instead of asked about first.
+     *
+     * A row of hours is the thing people delete when they meant to edit it, and a dialog asking
+     * "are you sure" before every one of them charges the common case for the rare mistake. The
+     * entry keeps its engagement, so it goes back through the ordinary engagement-scoped undo.
+     */
+    const undo = await remember({
+      audit: entry.audit,
+      kind: 'time-entry',
+      payload: entry.toObject(),
+      label: `${entry.hours}h${entry.note ? ` — ${entry.note}` : ''}`,
+      actor: req.user,
+    });
     await TimeEntry.deleteOne({ _id: entry._id });
-    res.json({ ok: true, id: req.params.id });
+    res.json({ ok: true, id: req.params.id, undo });
   })
 );
 

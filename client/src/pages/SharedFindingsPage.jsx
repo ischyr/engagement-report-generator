@@ -4,6 +4,7 @@ import { CheckCircle2, Circle, ShieldAlert } from 'lucide-react';
 
 import { api } from '../lib/api.js';
 import RemediationClaim from '../components/shared/RemediationClaim.jsx';
+import ClientQuestion from '../components/shared/ClientQuestion.jsx';
 import { cn, formatDate } from '../lib/utils.js';
 import { Card, CardBody, CardHeader } from '../components/ui/Card.jsx';
 import { Button } from '../components/ui/Button.jsx';
@@ -232,6 +233,15 @@ export default function SharedFindingsPage() {
                     finding={{ ...finding, canAttach: Boolean(data.allowEvidence) }}
                   />
                 ) : null}
+
+                {/*
+                  And the other direction.
+
+                  Under the claim rather than above it, because the common case is a client who
+                  came to say what they did; the question is what they reach for when they cannot
+                  do that yet. Behind the same permission for the same reason — see the route.
+                */}
+                {data.allowUpdates ? <ClientQuestion token={token} finding={finding} /> : null}
               </CardBody>
             </Card>
           ))}

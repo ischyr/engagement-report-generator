@@ -20,11 +20,25 @@ export function THead({ children }) {
   );
 }
 
-export function TH({ children, className, align = 'left', width }) {
+/**
+ * A column heading, and optionally a control for ordering by it.
+ *
+ * `sort` is a `useTableSort()` and `sortKey` names this column in it. Both or neither: a heading
+ * that looks sortable and is not is worse than one that plainly is not, and most columns — an
+ * actions column, a checkbox — have nothing to sort by.
+ *
+ * `aria-sort` on the cell rather than a label on the button, because that is what a screen reader
+ * announces when it reaches the column, which is the moment the information is useful.
+ */
+export function TH({ children, className, align = 'left', width, sort, sortKey }) {
+  const sortable = Boolean(sort && sortKey);
+  const active = sortable && sort.key === sortKey;
+
   return (
     <th
       scope="col"
       style={width ? { width } : undefined}
+      aria-sort={active ? (sort.direction === 'desc' ? 'descending' : 'ascending') : undefined}
       className={cn(
         'whitespace-nowrap px-4 py-2.5 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle',
         align === 'right' && 'text-right',
@@ -33,7 +47,35 @@ export function TH({ children, className, align = 'left', width }) {
         className
       )}
     >
-      {children}
+      {sortable ? (
+        <button
+          type="button"
+          onClick={() => sort.toggle(sortKey)}
+          title={`Sort by ${typeof children === 'string' ? children.toLowerCase() : 'this column'}`}
+          className={cn(
+            'group inline-flex items-center gap-1 rounded uppercase tracking-wider transition hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500',
+            align === 'right' && 'flex-row-reverse',
+            active && 'text-fg'
+          )}
+        >
+          {children}
+          {/*
+            An arrow only on the column doing the sorting, and a faint one on hover elsewhere —
+            so the table is not a row of arrows, and it is still discoverable without one.
+          */}
+          <span
+            aria-hidden
+            className={cn(
+              'text-[0.625rem] leading-none transition',
+              active ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'
+            )}
+          >
+            {active && sort.direction === 'desc' ? '▼' : '▲'}
+          </span>
+        </button>
+      ) : (
+        children
+      )}
     </th>
   );
 }

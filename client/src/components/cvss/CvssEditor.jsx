@@ -387,8 +387,14 @@ export function SeverityBar({ counts, total, className, height = 6 }) {
   );
 }
 
-/** Labelled counts for the severity meter — the required text encoding. */
-export function SeverityLegend({ counts, className, showZero = false }) {
+/**
+ * Labelled counts for the severity meter — the required text encoding.
+ *
+ * `onPick` is optional and makes each entry a button. Optional because most of the places this
+ * appears have nowhere to send somebody: it is a summary on a card, and a count that looks
+ * clickable and is not is worse than one that plainly is not.
+ */
+export function SeverityLegend({ counts, className, showZero = false, onPick }) {
   const entries = severityCountEntries(counts).filter(([, n]) => showZero || n > 0);
   if (!entries.length) {
     return <p className={cn('text-xs text-fg-subtle', className)}>No findings recorded yet.</p>;
@@ -397,11 +403,27 @@ export function SeverityLegend({ counts, className, showZero = false }) {
     <ul className={cn('flex flex-wrap items-center gap-x-4 gap-y-1.5', className)}>
       {entries.map(([severity, count]) => {
         const meta = SEVERITY_META[severity];
-        return (
-          <li key={severity} className="flex items-center gap-1.5 text-xs">
+        const body = (
+          <>
             <span className={cn('size-2 shrink-0 rounded-full', meta.dot)} />
             <span className="text-fg-muted">{meta.label}</span>
             <span className="font-mono font-semibold tabular-nums text-fg">{count}</span>
+          </>
+        );
+        return (
+          <li key={severity} className="flex items-center text-xs">
+            {onPick ? (
+              <button
+                type="button"
+                onClick={() => onPick(meta.label)}
+                title={`Show the ${meta.label.toLowerCase()} findings`}
+                className="flex items-center gap-1.5 rounded px-1 py-0.5 transition hover:bg-white/6 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              >
+                {body}
+              </button>
+            ) : (
+              <span className="flex items-center gap-1.5">{body}</span>
+            )}
           </li>
         );
       })}

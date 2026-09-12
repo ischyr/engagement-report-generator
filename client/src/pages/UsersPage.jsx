@@ -17,6 +17,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
+import { useTableSort } from '../hooks/useTableSort.js';
 import { displayName, formatDateTime, timeAgo } from '../lib/utils.js';
 
 import { Card, CardHeader } from '../components/ui/Card.jsx';
@@ -454,7 +455,19 @@ export default function UsersPage() {
   };
   const [resetting, setResetting] = useState(false);
 
-  const users = Array.isArray(data) ? data : [];
+  const sort = useTableSort('person');
+  /*
+   * Sorted here rather than by the server: the whole team is already on the page, and asking the
+   * API to reorder a list of thirty rows it has just sent would be a round trip to do arithmetic.
+   */
+  const users = sort.apply(Array.isArray(data) ? data : [], {
+    person: (row) => displayName(row) || row.username,
+    role: (row) => (row.roles?.length ? row.roles : [row.role]).join(', '),
+    status: (row) => (row.enabled ? 'enabled' : 'disabled'),
+    totp: (row) => Boolean(row.totpEnabled),
+    /* The moment behind "3 days ago", so newest-first means newest-first. */
+    seen: (row) => row.lastLoginAt ?? row.lastSeenAt ?? null,
+  });
 
   const confirmReset = async () => {
     if (!pendingReset) return;
@@ -533,11 +546,11 @@ export default function UsersPage() {
         ) : (
           <Table>
             <THead>
-              <TH>Person</TH>
-              <TH>Role</TH>
-              <TH>Status</TH>
-              <TH>Two-factor</TH>
-              <TH align="right">Last signed in</TH>
+              <TH sort={sort} sortKey="person">Person</TH>
+              <TH sort={sort} sortKey="role">Role</TH>
+              <TH sort={sort} sortKey="status">Status</TH>
+              <TH sort={sort} sortKey="totp">Two-factor</TH>
+              <TH align="right" sort={sort} sortKey="seen">Last signed in</TH>
               <TH width="7rem" />
             </THead>
             <TBody>

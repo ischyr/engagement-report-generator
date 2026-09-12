@@ -163,7 +163,7 @@ all it needs is navigate, type, click and screenshot, and Node has a WebSocket c
 
 ## Checking it works
 
-Eighteen suites — the first seven want a real database, the rest do not:
+Twenty-four suites — the first twelve want a real database, the rest do not:
 
 ```bash
 npm run test:tags     # the template language and the OOXML it produces
@@ -172,6 +172,11 @@ npm run test:api      # the versioned API: which credential, which scope, which 
 npm run test:live     # one heartbeat carries the roster and the notifications
 npm run test:projection # a tab that reads less still answers with everything, and still refuses
 npm run test:search   # the search filters in Mongo now, and still finds every result it did
+npm run test:report-flow # a report is queued, collected, and two of them can be compared
+npm run test:undo    # a delete offers itself back, and only to whoever may take it
+npm run test:housekeeping # a finished engagement is counted, not loaded; notifications end
+npm run test:workbench # the enumeration split pane, at a real width in a browser
+npm run test:client-question # a client can ask, and never sees what the team asked
 npm run test:media    # evidence, storage and the render cache
 npm run test:charts   # the report charts, drawn and delivered into a document
 npm run test:mail     # the message format and the SMTP conversation
@@ -183,6 +188,12 @@ npm run test:assistant # what the optional assistant sends, and what it never do
 npm run test:chunks   # the first load stays small (needs npm run build first)
 npm run test:live-poll # the signed-in app still runs one timer, not four
 npm run test:findings-rows # typing beside a list of sixty findings re-renders none of them
+npm run test:enumeration-rows # and typing beside the enumeration tree re-renders none of it
+npm run test:library  # the library lists without its prose, and still holds every word
+npm run test:library-editor # and will not save an entry it has not finished reading
+npm run test:verification # the queue of what clients said, and the wall round each engagement
+npm run test:timeline-window # the operation timeline opens on the latest ten
+npm run test:url-state # filters live in the address bar, and the columns sort
 npm run smoke         # a rendered report, every page, the docs, WCAG contrast
 ```
 

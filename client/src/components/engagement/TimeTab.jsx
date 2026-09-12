@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CalendarDays, Clock, Timer, Trash2, TriangleAlert } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
+import { offerUndo } from '../../lib/undo.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
@@ -12,7 +13,7 @@ import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
 import { Input, Select } from '../ui/Field.jsx';
 import { Avatar } from '../ui/Misc.jsx';
-import { ConfirmDialog } from '../ui/Modal.jsx';
+
 import { EmptyState, LoadingBlock } from '../ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../ui/Table.jsx';
 
@@ -55,7 +56,6 @@ export default function TimeTab({ audit, editable }) {
   const [note, setNote] = useState('');
   const [who, setWho] = useState(me);
   const [saving, setSaving] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState(null);
 
   const entries = data?.entries ?? [];
   const people = data?.people ?? [];
@@ -109,12 +109,24 @@ export default function TimeTab({ audit, editable }) {
     }
   };
 
-  const remove = async () => {
+  /**
+   * Removes a row of hours, and offers it back.
+   *
+   * No confirmation. Deleting the wrong line of a timesheet is a mis-click, not a decision, and a
+   * dialog in front of every one of them is a tax on the ninety-nine times somebody meant it. The
+   * entry goes back with its own id and its own engagement, so a report that has already counted
+   * it counts it again.
+   */
+  const remove = async (entry) => {
     try {
-      await api.del(`/time/${pendingDelete._id}`);
-      setPendingDelete(null);
+      const result = await api.del(`/time/${entry._id}`);
       await reload({ quiet: true });
-      toast.success('Entry removed');
+      offerUndo(toast, {
+        auditId: entry.audit?._id ?? entry.audit ?? audit?._id,
+        undo: result?.undo,
+        onDone: () => reload({ quiet: true }),
+        fallback: 'Entry removed',
+      });
     } catch (error) {
       toast.fromError(error);
     }
@@ -345,7 +357,7 @@ export default function TimeTab({ audit, editable }) {
                           icon={Trash2}
                           title="Remove this entry"
                           className="hover:text-crit"
-                          onClick={() => setPendingDelete(entry)}
+                          onClick={() => remove(entry)}
                         />
                       ) : null}
                     </TD>
@@ -357,16 +369,6 @@ export default function TimeTab({ audit, editable }) {
         </Card>
       ) : null}
 
-      <ConfirmDialog
-        open={Boolean(pendingDelete)}
-        onClose={() => setPendingDelete(null)}
-        onConfirm={remove}
-        title="Remove this entry?"
-        message={`${pendingDelete?.hours} h on ${
-          pendingDelete ? formatDate(pendingDelete.day) : ''
-        }. The engagement's total drops by that much.`}
-        confirmLabel="Remove"
-      />
     </div>
   );
 }

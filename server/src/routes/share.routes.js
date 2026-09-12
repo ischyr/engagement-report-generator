@@ -236,6 +236,114 @@ router.post(
 );
 
 /**
+ * Something the client wants to ask about a finding.
+ *
+ * The link has taken a status and a note for a while: the client can tell us what they *did*. What
+ * it never took is a question — so a reader who wanted to know which of their three load balancers
+ * a finding was about had to leave the page, find somebody's address, and send an email that
+ * landed nowhere near the finding. The Questions tab has existed the whole time for exactly this
+ * conversation, pointed the other way.
+ *
+ * Behind `allowUpdates`, the same switch as the claim. A question is a smaller write than a status
+ * change, and it was tempting to give it its own permission — but a firm that hands somebody a
+ * read-only link has said what it means, and a second switch would be more to explain and more to
+ * get wrong than it is worth. Somebody who wants questions without claims can say so in the label.
+ *
+ * The question lands open and unprinted, which is what the model already does for any open
+ * question: "they asked and nobody has replied" is a thing to chase rather than a caveat to
+ * publish, until somebody decides otherwise.
+ */
+router.post(
+  '/:token/findings/:findingId/question',
+  shareLimiter,
+  validate(
+    z.object({
+      /* Capped here as well as in the schema — the body is parsed before any of the checks run. */
+      text: z.string().trim().min(3, 'Say a little more than that.').max(600),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const link = await readShareLink(req.params.token);
+    if (!link) throw notFound('That link is not valid any more.');
+    if (link.kind === 'status') throw forbidden('This link shows progress only.');
+    if (!link.allowUpdates) throw forbidden('This link is read-only.');
+
+    const audit = await Audit.findById(link.audit._id);
+    if (!audit || audit.deletedAt) throw notFound('That link is not valid any more.');
+    if (audit.state === 'APPROVED') {
+      throw forbidden('This report is closed. Tell your contact and they will reopen it.');
+    }
+
+    const finding = audit.findings.id(req.params.findingId);
+    if (!finding) throw notFound('That finding is not on this report.');
+
+    audit.questions.push({
+      text: req.body.text,
+      /*
+       * The finding's id, so the page can hand the question back under the right heading and the
+       * team can open the thing being asked about. `context` is documented as free text — "a
+       * host, a finding, a screen" — and an id is the one form of it that can be followed.
+       */
+      context: String(finding._id),
+      /* Which link, which is the only name anybody has for a reader with no account. */
+      fromClient: link.label || 'the client',
+      status: 'open',
+      print: false,
+      askedBy: null,
+    });
+    await audit.save();
+    const asked = audit.questions.at(-1);
+
+    /* No actor, like the claim: nobody with an account did this, and a log that implied one
+       would be the most misleading kind of record. */
+    await recordActivity({
+      audit,
+      actor: null,
+      action: ACTIONS.CLIENT_ASKED_QUESTION,
+      target: finding.identifier || finding.title,
+      meta: { link: link.label || 'a shared link' },
+      summary: `The client${link.label ? ` (${link.label})` : ''} asked about ${
+        finding.identifier || finding.title
+      }`,
+    });
+
+    const team = [audit.creator, ...(audit.collaborators ?? [])]
+      .map((person) => String(person?._id ?? person ?? ''))
+      .filter(Boolean);
+    const told = [...new Set(team)];
+    if (told.length) {
+      await Notification.insertMany(
+        told.map((user) => ({
+          user,
+          type: 'client-asked-question',
+          actor: null,
+          audit: audit._id,
+          auditName: audit.name,
+          findingId: finding._id,
+          target: finding.identifier || finding.title,
+          message: `${link.label || 'The client'} asked about ${
+            finding.identifier || finding.title
+          }: \u201c${req.body.text.slice(0, 120)}${req.body.text.length > 120 ? '\u2026' : ''}\u201d`,
+          /* To the tab that holds the conversation, not to the finding — the answer is written
+             there, and landing on the finding would leave somebody hunting for the box. */
+          href: `/engagements/${audit._id}?tab=questions`,
+        }))
+      ).catch(() => {
+        /* The question is recorded; failing to announce it must not undo that. */
+      });
+    }
+
+    res.status(201).json({
+      _id: String(asked._id),
+      text: asked.text,
+      askedAt: asked.createdAt ?? null,
+      answer: '',
+      answeredAt: null,
+    });
+  })
+);
+
+/**
  * A screenshot attached to a claim.
  *
  * The only route in this application that accepts a file from somebody with no account, which is

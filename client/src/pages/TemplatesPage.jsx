@@ -28,6 +28,8 @@ import { PageHeader, SearchInput, TagChip, Tabs } from '../components/ui/Misc.js
 import { Button } from '../components/ui/Button.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import { Input, Select, Textarea, Toggle } from '../components/ui/Field.jsx';
+import { useUrlState } from '../hooks/useUrlState.js';
+import { useTableSort } from '../hooks/useTableSort.js';
 
 /** Kept in step with PROPOSAL_DOC_LABELS on the server. */
 const PROPOSAL_DOC_LABELS = {
@@ -48,13 +50,13 @@ import TestRenderModal from '../components/templates/TestRenderModal.jsx';
 
 function TagReference() {
   const { data, loading } = useResource('/templates/tag-reference');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useUrlState('q', '');
   /**
    * Which vocabulary. Two lists rather than one, because they are different documents: a
    * contract has no findings in it, and offering `{{ findings }}` to somebody writing an NDA
    * would be an invitation to a placeholder that renders as nothing.
    */
-  const [purpose, setPurpose] = useState('report');
+  const [purpose, setPurpose] = useUrlState('purpose', 'report');
 
   const groups = useMemo(() => {
     const all = (purpose === 'proposal' ? data?.proposalGroups : data?.groups) ?? [];
@@ -368,7 +370,7 @@ export default function TemplatesPage() {
   const { canWrite } = useAuth();
   const { data, error, loading, reload } = useResource('/templates', { initial: [] });
 
-  const [tab, setTab] = useState('templates');
+  const [tab, setTab] = useUrlState('tab', 'templates');
   const [uploading, setUploading] = useState(false);
   const [renaming, setRenaming] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -378,7 +380,14 @@ export default function TemplatesPage() {
   const [testing, setTesting] = useState(null);
   const replaceInputRef = useRef(null);
 
-  const list = Array.isArray(data) ? data : [];
+  const sort = useTableSort('template');
+  const list = sort.apply(Array.isArray(data) ? data : [], {
+    template: (row) => row.name,
+    /* How many placeholders it actually uses, which is what the column shows a count of. */
+    placeholders: (row) => (row.detectedTags ?? []).length,
+    size: (row) => row.size ?? 0,
+    updated: (row) => row.updatedAt ?? null,
+  });
 
   const download = async (template) => {
     try {
@@ -496,10 +505,10 @@ export default function TemplatesPage() {
           ) : (
             <Table>
               <THead>
-                <TH>Template</TH>
-                <TH>Placeholders</TH>
-                <TH>Size</TH>
-                <TH align="right">Updated</TH>
+                <TH sort={sort} sortKey="template">Template</TH>
+                <TH sort={sort} sortKey="placeholders">Placeholders</TH>
+                <TH sort={sort} sortKey="size">Size</TH>
+                <TH align="right" sort={sort} sortKey="updated">Updated</TH>
                 <TH width="9rem" />
               </THead>
               <TBody>
