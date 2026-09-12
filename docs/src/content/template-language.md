@@ -78,7 +78,7 @@ A section over a value shows its contents when the value is there:
 Filters use a pipe and can be chained:
 
 ```text
-{{ tester | initials }}                          Iulian Schifirnet → I.S.
+{{ tester | initials }}                          Tudor Enache → T.E.
 {{ date_start | date:'dd MMMM yyyy' }}           12 August 2026
 {{ date_start | fromTo:date_end }}               12 – 16 August 2026
 {{ findings | count:'severity':'High' }}         3

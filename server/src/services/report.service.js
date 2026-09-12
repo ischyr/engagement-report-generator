@@ -299,7 +299,7 @@ function customFieldValue(fields, key) {
 function userSummary(user) {
   if (!user) return null;
   /*
-   * Qualifications, because real reports name them: "Tested by I. Schifirnet (OSCP, CRT)".
+   * Qualifications, because real reports name them: "Tested by T. Enache (OSCP, CRT)".
    * Names only — an issuer and an expiry are the firm's business, not the client's — and
    * empty for a client contact, which has no such field and never will.
    */

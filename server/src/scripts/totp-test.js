@@ -120,9 +120,9 @@ check('two secrets do not validate each other', verifyCode(generateSecret(), gen
 
 /* ---------------------------------- URI ----------------------------------- */
 console.log('\notpauth URI:');
-const uri = buildOtpauthUri({ secret: 'ABCDEFGH', account: 'iulian@example.com', issuer: 'Engy Report' });
+const uri = buildOtpauthUri({ secret: 'ABCDEFGH', account: 'tudor@example.com', issuer: 'Engy Report' });
 check('scheme and type', uri.startsWith('otpauth://totp/'), uri.slice(0, 20));
-check('issuer prefix is encoded in the label', uri.includes('Engy%20Report%3Aiulian%40example.com'), uri);
+check('issuer prefix is encoded in the label', uri.includes('Engy%20Report%3Atudor%40example.com'), uri);
 check('carries the secret', uri.includes('secret=ABCDEFGH'));
 check('declares SHA1 / 6 / 30', uri.includes('algorithm=SHA1') && uri.includes('digits=6') && uri.includes('period=30'));
 

@@ -109,7 +109,7 @@ const DATA = {
   start: '2026-08-12',
   end: '2026-08-16',
   crossYear: '2027-01-04',
-  tester: 'Iulian Schifirnet',
+  tester: 'Tudor Enache',
   hosts: '<p>10.0.0.1</p><p>10.0.0.2 &amp; friends</p>',
   plain: 'one\ntwo\nthree',
   severityCounts: { critical: 2, high: 1, medium: 0 },
@@ -139,7 +139,7 @@ async function main() {
       DATA
     );
     const text = textOf(xml);
-    check('initials', text.includes('I.S.'), text.slice(0, 80));
+    check('initials', text.includes('T.E.'), text.slice(0, 80));
     check(
       'a date range inside one month prints the month once',
       text.includes('12 – 16 August 2026'),

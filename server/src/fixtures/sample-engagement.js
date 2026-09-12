@@ -83,9 +83,9 @@ export const sampleAudit = {
     { client: 'c2', role: 'technical' },
     { client: 'c3', role: 'cc' },
   ],
-  creator: { username: 'ischifirnet', firstname: 'Iulian', lastname: 'Schifirnet', email: 'iulian@engy.example', title: 'Lead Penetration Tester' },
+  creator: { username: 'tenache', firstname: 'Tudor', lastname: 'Enache', email: 'tudor@engy.example', title: 'Lead Penetration Tester' },
   collaborators: [
-    { username: 'ischifirnet', firstname: 'Iulian', lastname: 'Schifirnet', email: 'iulian@engy.example', title: 'Lead Penetration Tester' },
+    { username: 'tenache', firstname: 'Tudor', lastname: 'Enache', email: 'tudor@engy.example', title: 'Lead Penetration Tester' },
     { username: 'aion', firstname: 'Andrei', lastname: 'Ion', email: 'andrei@engy.example', title: 'Security Consultant' },
   ],
   reviewers: [{ username: 'qa', firstname: 'Maria', lastname: 'Pop', email: 'maria@engy.example', title: 'QA Reviewer' }],
@@ -343,7 +343,7 @@ export const sampleSignatures = {
   recorded: true,
   signatures: [
     {
-      name: 'Iulian Schifirnet',
+      name: 'Tudor Enache',
       title: 'Lead Penetration Tester',
       role: 'Tested by',
       statement: 'I confirm the testing described in this report was carried out as stated.',

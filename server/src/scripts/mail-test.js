@@ -466,7 +466,7 @@ const notification = notificationEmail({
   appName: 'Engy Report',
   notification: {
     title: 'A review was requested — PT-2025-004',
-    body: 'Iulian asked you to review it.',
+    body: 'Tudor asked you to review it.',
     context: 'On: VULN-03',
   },
   url: 'https://engy.firm.example/engagements/abc?tab=findings',
@@ -486,8 +486,8 @@ const report = reportEmail({
   message: 'As discussed.\n\nTwo criticals, both fixed already.',
   filename: 'Northwind Report.docx',
   hash: 'a'.repeat(64),
-  senderName: 'Iulian Schifirnet',
-  senderEmail: 'iulian@firm.example',
+  senderName: 'Tudor Enache',
+  senderEmail: 'tudor@firm.example',
 });
 check('the report email names the version in its subject', report.subject.includes('1.0'), report.subject);
 check('it carries the hash the register keeps', report.html.includes('a'.repeat(64)));
@@ -501,7 +501,7 @@ check(
   (report.html.match(/<p style="margin:0 0 14px/g) ?? []).length >= 2
 );
 
-const test = testEmail({ appName: 'Engy Report', host: 'smtp.gmail.com', security: 'starttls', by: 'Iulian' });
+const test = testEmail({ appName: 'Engy Report', host: 'smtp.gmail.com', security: 'starttls', by: 'Tudor' });
 check('the test email says how it got there', test.html.includes('smtp.gmail.com') && test.html.includes('STARTTLS'));
 
 check(

@@ -282,7 +282,7 @@ export function registerFilters(options = {}) {
 
   /* ------------------------------------------------------------------ text + dates */
 
-  /** "Iulian Schifirnet" → "I.S." — for a signature line or a tester column. */
+  /** "Tudor Enache" → "T.E." — for a signature line or a tester column. */
   f.initials = (input) =>
     String(input ?? '')
       .split(/\s+/)

@@ -81,7 +81,7 @@ export const FILTERS = [
   },
 
   /* ---------------------------------------------------------------- text + dates */
-  { name: 'initials', example: '{{ .tester | initials }}', description: 'Iulian Schifirnet → I.S.' },
+  { name: 'initials', example: '{{ .tester | initials }}', description: 'Tudor Enache → T.E.' },
   {
     name: 'fromTo',
     example: '{{ .date_start | fromTo:.date_end }}',

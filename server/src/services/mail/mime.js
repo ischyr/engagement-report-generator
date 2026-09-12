@@ -43,7 +43,7 @@ const isAsciiText = (value) => !/[^\x20-\x7e\t\r\n]/.test(String(value ?? ''));
  * An address as a header writes it.
  *
  * The display name is quoted rather than left bare: a name containing a comma or a full stop —
- * "Schifirnet, Iulian", "J. Smith Ltd." — parses as two addresses or as a broken one otherwise.
+ * "Enache, Tudor", "J. Smith Ltd." — parses as two addresses or as a broken one otherwise.
  */
 export function formatAddress(address) {
   if (typeof address === 'string') return address.trim();
