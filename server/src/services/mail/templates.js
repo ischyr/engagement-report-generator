@@ -140,6 +140,141 @@ export function reportEmail({
   };
 }
 
+/**
+ * The link a client opens, sent to the client rather than pasted into somebody's own mail.
+ *
+ * Two wordings, because the two kinds of link ask the reader for opposite things and a single
+ * neutral sentence would serve neither. A **status** link is a courtesy: here is how far along we
+ * are, nothing is expected of you. A **findings** link is a request: here is what we found, please
+ * tell us what you have fixed. Sending the second with the first's wording is how a client comes
+ * to believe the link was informational and does nothing with it for three weeks.
+ *
+ * The expiry is stated plainly, and it is the one detail that must not be left to the covering
+ * note. A client who opens the link a month later and finds it dead assumes the report was
+ * withdrawn; a client who was told it lasts thirty days simply asks for another.
+ *
+ * No attachment and no finding text. The mail carries a door, not the room — the report itself
+ * goes through `deliveries/send`, which attaches it, hashes it and writes the register. Two
+ * messages rather than one, on purpose: the document is the deliverable and the link is the
+ * conversation after it, and they have different lifetimes.
+ */
+export function shareLinkEmail({
+  appName,
+  engagement,
+  clientName,
+  kind,
+  url,
+  expiresAt,
+  message,
+  senderName,
+  senderEmail,
+}) {
+  const findings = kind !== 'status';
+  const note = String(message ?? '').trim();
+  const body = note
+    ? note
+        .split(/\n{2,}/)
+        .map((paragraph) => escape(paragraph).replace(/\n/g, '<br>'))
+        .join('</p><p style="margin:0 0 14px;font-size:14px;line-height:1.55;color:#2c3140">')
+    : findings
+      ? `We have finished testing <strong>${escape(engagement)}</strong>. The link below shows what ` +
+        'we found, and lets you tell us what you have already fixed.'
+      : `The link below shows how <strong>${escape(engagement)}</strong> is progressing. It updates ` +
+        'as we go, so there is no need to ask — and it carries no findings.';
+
+  const until = expiresAt
+    ? new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '';
+
+  const parts = {
+    appName,
+    heading: findings ? `${engagement} — what we found` : `${engagement} — where we are`,
+    lines: [
+      body,
+      findings
+        ? 'You can mark anything as fixed, attach a screenshot of the fix, and ask us about a ' +
+          'particular finding. We see all of it.'
+        : 'Nothing is needed from you.',
+      until ? `The link works until <strong>${escape(until)}</strong>.` : '',
+      /*
+       * Said in the mail, because it is the sentence that stops a client forwarding it to a
+       * supplier. Whoever holds this URL is inside, and there is no password behind it.
+       */
+      'Please treat the address as confidential — anyone who has it can see this page.',
+    ],
+    action: { label: findings ? 'Open the findings' : 'See where we are', url },
+    footer:
+      `Sent by ${escape(senderName)}${senderEmail ? ` &lt;${escape(senderEmail)}&gt;` : ''}` +
+      `${clientName ? ` for ${escape(clientName)}` : ''}. ` +
+      'If this has reached you in error, please delete it and tell the sender.',
+  };
+
+  return {
+    subject: findings ? `${engagement} — what we found` : `${engagement} — progress`,
+    html: shell(parts),
+    text: textOf(parts),
+  };
+}
+
+/**
+ * A reminder that findings are still outstanding.
+ *
+ * The only unprompted mail this application sends to somebody outside the firm, which decides
+ * everything about how it reads:
+ *
+ * **It says what is left, and nothing about what it is.** A number and a name. Severities, titles
+ * and counts by rating all belong on the page behind the link, where the reader has already been
+ * authenticated by holding the URL — an email is forwarded, quoted and left in mailboxes, and a
+ * subject line naming three criticals at a named client is the kind of thing that ends up
+ * somewhere it should not.
+ *
+ * **It carries no link.** Only a hash of the token is kept, so there is nothing to put here — and
+ * that turns out to be the right answer anyway: the reader already has the link, and a second URL
+ * for the same thing invites them to wonder which one is real.
+ *
+ * **It says when it will stop.** Somebody who has decided not to act should be able to see the end
+ * of it rather than wonder whether this arrives forever. The last one says it is the last one.
+ */
+export function remediationReminderEmail({
+  appName,
+  engagement,
+  clientName,
+  outstanding,
+  expiresAt,
+  remaining,
+  appUrl,
+}) {
+  const until = expiresAt
+    ? new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '';
+
+  const parts = {
+    appName,
+    heading: `${engagement} — ${outstanding} still open`,
+    lines: [
+      `There ${outstanding === 1 ? 'is' : 'are'} still <strong>${outstanding}</strong> ` +
+        `finding${outstanding === 1 ? '' : 's'} on <strong>${escape(engagement)}</strong> waiting to ` +
+        'be marked as fixed. The link we sent you shows which, and lets you tell us what you have done.',
+      until ? `That link works until <strong>${escape(until)}</strong>.` : '',
+      remaining > 0
+        ? `We will send ${remaining === 1 ? 'one more of these' : `up to ${remaining} more of these`}, and stop as soon as everything is marked.`
+        : 'This is the last of these we will send.',
+      'If the link has been lost, or somebody else should be receiving this, reply and tell us.',
+    ],
+    action: null,
+    footer:
+      `Sent by ${escape(appName)}${clientName ? ` for ${escape(clientName)}` : ''}` +
+      `${appUrl ? '' : ''}. Reply to this message to reach the team.`,
+  };
+
+  return {
+    /* No count and no client name in the subject: see the note above. */
+    subject: `${engagement} — findings still open`,
+    html: shell(parts),
+    text: textOf(parts),
+  };
+}
+
 /** The test send, which exists to prove one thing and says so. */
 export function testEmail({ appName, host, security, by }) {
   const parts = {

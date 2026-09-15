@@ -5,6 +5,7 @@ import { attachCollabServer } from './collab/index.js';
 import { sweepTrashOnBoot } from './services/trash.service.js';
 import { sweepBookingReminders } from './services/booking-reminders.service.js';
 import { sweepRecurringEngagements } from './services/recurrence-reminders.service.js';
+import { remindOutstandingFindings as sweepRemediationReminders } from './services/remediation-reminders.service.js';
 import { buildLabel } from './utils/build-info.js';
 import { migrateApprovalsOnBoot } from './services/approvals-migration.service.js';
 import { backfillApprovals } from './services/account-approval.service.js';
@@ -163,6 +164,17 @@ async function main() {
      */
     void sweepRecurringEngagements();
     setInterval(() => void sweepRecurringEngagements(), DAY_MS).unref();
+
+    /*
+     * And the clients, on links that asked to be chased.
+     *
+     * The same rhythm and the same reasoning as the two above — a reminder that only fires when
+     * somebody restarts the server is not a reminder. The difference is who it reaches: this is
+     * the only sweep that writes to somebody outside the firm, so every rule about whether to
+     * send lives in the service and every one of them fails closed.
+     */
+    void sweepRemediationReminders();
+    setInterval(() => void sweepRemediationReminders(), DAY_MS).unref();
   });
   /*
    * Collaborative editing, on the same server and the same origin.

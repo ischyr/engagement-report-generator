@@ -465,9 +465,29 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
    * hands over its milestones for exactly this — so what the timeline says and what the tables
    * beside it say cannot drift.
    */
+  /*
+   * Internal rows never reach a template.
+   *
+   * A branch, not a row: a section held back whose steps still printed would be the worst kind of
+   * surprise, because nothing on the page would show that anything was withheld. The walk is
+   * depth-first, so an ancestor is always seen before its children and one pass is enough.
+   *
+   * Computed here rather than in the enumeration block below because three other things need it
+   * first. The findings do — a finding saying "discovered by <held-back step>" would leak the row
+   * by its title, which is the quietest possible way to undo the whole point of the flag. And so
+   * does the timeline immediately below, which for a long time it did not: it was handed
+   * `audit.enumeration` whole, so every internal step printed its title, its tool and its target
+   * in the one part of the report nobody thought to check. `enumerationHeldBack` says three
+   * readers have to agree; the timeline was a fourth that never had.
+   */
+  const held = enumerationHeldBack(audit);
+  const reportable = enumerationInReadingOrder(audit).filter(
+    (node) => !held.has(String(node.step._id))
+  );
+
   const timelineLog = operationTimeline(
     {
-      enumeration: audit?.enumeration ?? [],
+      enumeration: reportable.map((node) => node.step),
       detection: detectionLog?.events ?? [],
       phishing: phishingLog ?? [],
       scopeChanges: scopeLog?.scopeChanges ?? [],
@@ -486,21 +506,6 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
   const historyFor = (id) =>
     (typeof history.get === 'function' ? history.get(String(id)) : history[String(id)]) ?? [];
 
-  /*
-   * Internal rows never reach a template.
-   *
-   * A branch, not a row: a section held back whose steps still printed would be the worst kind of
-   * surprise, because nothing on the page would show that anything was withheld. The walk is
-   * depth-first, so an ancestor is always seen before its children and one pass is enough.
-   *
-   * Computed here rather than in the enumeration block below because the findings need it too — a
-   * finding saying "discovered by <held-back step>" would leak the row by its title, which is the
-   * quietest possible way to undo the whole point of the flag.
-   */
-  const held = enumerationHeldBack(audit);
-  const reportable = enumerationInReadingOrder(audit).filter(
-    (node) => !held.has(String(node.step._id))
-  );
 
   /*
    * Which enumeration steps led to which finding.

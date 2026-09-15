@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { BookmarkPlus, Search, Share2, Trash2, User } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
+import { optimistically, replacing } from '../../lib/optimistic.js';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
 import { cn, htmlToSnippet } from '../../lib/utils.js';
@@ -25,7 +26,9 @@ import { EmptyState, LoadingBlock } from '../ui/Feedback.jsx';
  */
 export default function SnippetPicker({ open, onClose, onInsert, selectionHtml = '' }) {
   const toast = useToast();
-  const { data, loading, reload } = useResource(open ? '/snippets' : null, { initial: [] });
+  const { data, loading, reload, setData } = useResource(open ? '/snippets' : null, {
+    initial: [],
+  });
   const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState('');
@@ -75,8 +78,13 @@ export default function SnippetPicker({ open, onClose, onInsert, selectionHtml =
 
   const share = async (snippet) => {
     try {
-      await api.put(`/snippets/${snippet._id}`, { shared: !snippet.shared });
-      await reload({ quiet: true });
+      await optimistically({
+        from: data,
+        to: replacing(data, snippet._id, { shared: !snippet.shared }),
+        setData,
+        request: () => api.put(`/snippets/${snippet._id}`, { shared: !snippet.shared }),
+        reload,
+      });
     } catch (error) {
       toast.fromError(error);
     }

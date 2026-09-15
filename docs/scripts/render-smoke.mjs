@@ -255,6 +255,45 @@ const listed = SECTIONS.flatMap((section) => section.pages.map((page) => page.sl
 check('every page is in exactly one section', new Set(listed).size === listed.length);
 check('and every one of them has a file', PAGES.every((page) => page.source.length > 0));
 
+/* ------------------------------------------------------------------ the terms --- */
+console.log('\nTerms:');
+{
+  /*
+   * Here rather than in a suite of its own: it is one fact about the project, and the docs smoke
+   * is already the place that checks the project is coherent rather than that the code works.
+   */
+  const root = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const licence = (() => {
+    try {
+      return fs.readFileSync(`${root}LICENSE`, 'utf8');
+    } catch {
+      return '';
+    }
+  })();
+
+  check('there is a LICENSE at the root', licence.length > 0, 'no LICENSE file');
+  check('  it is the one the manifests claim', /MIT License/.test(licence), licence.slice(0, 60));
+  check(
+    '  and it names a copyright holder and a year',
+    /Copyright \(c\) \d{4} \S/.test(licence),
+    (licence.match(/Copyright.*/) ?? ['no copyright line'])[0]
+  );
+
+  /*
+   * And every workspace says so in the field the tooling reads. A person reads the file; an SBOM
+   * generator, a licence scanner and `npm ls` read this, and they are what a client's review asks.
+   */
+  const missing = ['package.json', 'server/package.json', 'client/package.json', 'docs/package.json']
+    .filter((manifest) => {
+      try {
+        return JSON.parse(fs.readFileSync(root + manifest, 'utf8')).license !== 'MIT';
+      } catch {
+        return true;
+      }
+    });
+  check('every workspace declares it', missing.length === 0, `not declared in: ${missing.join(', ')}`);
+}
+
 await vite.close();
 
 console.log('');

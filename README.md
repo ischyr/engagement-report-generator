@@ -194,10 +194,36 @@ npm run test:library-editor # and will not save an entry it has not finished rea
 npm run test:verification # the queue of what clients said, and the wall round each engagement
 npm run test:timeline-window # the operation timeline opens on the latest ten
 npm run test:url-state # filters live in the address bar, and the columns sort
+npm run test:engagement-tabs # every tab of an engagement still opens, now that none arrives with it
+npm run test:views    # saved views are one person's, and point inside this app
+npm run test:sessions # where you are signed in, who may see that, and what signing out does
+npm run test:share-send # the client is sent their link, and the link survives a mail failure
+npm run test:client-ask # what a client can say, including on a report that is closed
+npm run test:reminders # chasing a client, and the ten reasons not to
+npm run test:portfolio # a client's whole history on one link, and the four walls round it
+npm run test:checklist-io # a methodology out as a file and back, into any instance
+npm run test:unfiled  # output pasted with nowhere to put it, and the one rule that makes that safe
+npm run test:prose-limit # a write-up fits, a pasted log does not, and old work stays writable
+npm run test:navigation # a click does not empty the screen, and says so if it takes a moment
+npm run test:typing   # a search box stays ahead of the keys, whatever it is filtering
+npm run test:optimistic # a tick draws at once, and goes back if the server refuses it
 npm run smoke         # a rendered report, every page, the docs, WCAG contrast
 ```
 
 They create everything they need under a `zz-` prefix and remove it afterwards.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Use it, change it, run it for clients, sell what you build on it;
+keep the copyright notice with it.
+
+Every one of the 411 packages this installs is permissive too — MIT, ISC, BSD, Apache-2.0 or
+Unlicense, with nothing copyleft anywhere in the tree — so there is no obligation riding along
+underneath that licence. `docxtemplater` and `pizzip`, which do the .docx work, are the two worth
+naming, because both offer a paid tier and neither is needed for anything this uses.
+
+Reports you generate are yours. Nothing in this licence reaches the documents the software
+produces, the templates you write, or the client data you put into it.
 
 ---
 

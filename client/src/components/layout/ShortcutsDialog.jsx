@@ -8,7 +8,7 @@ import { Modal } from '../ui/Modal.jsx';
  * What the keyboard does, on `?`.
  *
  * The app is full of bindings and told nobody about any of them. ⌘S saves whatever editor is
- * dirty, `Ctrl+K` opens the search, `j`/`k` walk the findings list, `e` opens one straight into
+ * dirty, `Ctrl+K` opens the search, `Ctrl+Shift+D` keeps the list you are on, `j`/`k` walk the findings list, `e` opens one straight into
  * the editor, shift-click takes a run of them — and the only way to find that out was to read
  * `lib/keys.js`. Which means the keyboard work was, for most people, decoration.
  *
@@ -28,6 +28,7 @@ const GROUPS = () => [
     title: 'Anywhere',
     keys: [
       [['Ctrl', 'K'], 'Search everything — engagements, findings, notes, clients'],
+      [['Ctrl', 'Shift', 'D'], 'Save the list you are looking at as a view'],
       [[saveShortcutLabel()], 'Save whatever is open and unsaved'],
       [['?'], 'This list'],
       [['Esc'], 'Close a dialog, or put the list cursor away'],

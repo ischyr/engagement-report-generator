@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
+
+import { useSmoothNavigate } from '../../context/NavigationContext.jsx';
 import { Footprints, X } from 'lucide-react';
 
 import { usePresence } from '../../context/PresenceContext.jsx';
@@ -32,7 +34,7 @@ export function routeForLocation(key) {
 
 export default function FollowBar() {
   const { following, unfollow } = usePresence();
-  const navigate = useNavigate();
+  const navigate = useSmoothNavigate();
   const here = useLocation();
   /** The last place we moved to on their behalf, so we do not fight the browser's own history. */
   const lastJump = useRef('');

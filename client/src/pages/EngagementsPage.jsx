@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+
+import { useSmoothNavigate } from '../context/NavigationContext.jsx';
 import {
   Copy,
   ImageOff,
@@ -16,7 +18,7 @@ import {
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 import { useResource } from '../hooks/useResource.js';
 import { AUDIT_STATE_META, cn, timeAgo } from '../lib/utils.js';
 
@@ -265,7 +267,7 @@ function HealthChips({ health, state }) {
 }
 
 export default function EngagementsPage() {
-  const navigate = useNavigate();
+  const navigate = useSmoothNavigate();
   const toast = useToast();
   const { canWrite, user, isAdmin } = useAuth();
   const { data, error, loading, reload } = useResource('/audits', { initial: [] });
@@ -277,7 +279,7 @@ export default function EngagementsPage() {
    * be linked to is state somebody has to describe in a sentence instead. `?state=REVIEW&attention=1`
    * is now a thing you can send, bookmark, or get back by reloading.
    */
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   const [state, setState] = useUrlState('state', 'all');
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -431,7 +433,7 @@ export default function EngagementsPage() {
           </span>
         </button>
         <SearchInput
-          value={search}
+          value={typing}
           onChange={setSearch}
           placeholder="Search by name, reference or client…"
           className="w-full sm:ml-auto sm:w-72"

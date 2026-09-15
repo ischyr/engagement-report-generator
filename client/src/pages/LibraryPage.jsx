@@ -18,7 +18,7 @@ import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
 import { SeverityBadge } from '../components/ui/Badge.jsx';
 import { CvssEditor } from '../components/cvss/CvssEditor.jsx';
 import { RichTextEditor } from '../components/editor/LazyRichTextEditor.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 import { useTableSort } from '../hooks/useTableSort.js';
 
 const RICH_FIELDS = [
@@ -338,7 +338,7 @@ export default function LibraryPage() {
   const { canWrite } = useAuth();
   const { data, error, loading, reload } = useResource('/vulnerabilities', { initial: [] });
 
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   const [severity, setSeverity] = useUrlState('severity', 'all');
   const [editing, setEditing] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -561,7 +561,7 @@ export default function LibraryPage() {
       <div className="flex flex-wrap items-center gap-3">
         <Tabs options={tabs} value={severity} onChange={setSeverity} size="sm" />
         <SearchInput
-          value={search}
+          value={typing}
           onChange={setSearch}
           placeholder="Search titles, categories, descriptions…"
           className="w-full sm:ml-auto sm:w-72"

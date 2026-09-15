@@ -229,7 +229,7 @@ const AuthContext = AuthModule.AuthContext ?? AuthModule.default;
  * re-render the application does not have.
  */
 const { UnsavedProvider } = await load('/src/context/UnsavedContext.jsx');
-const { MemoryRouter } = await load('react-router-dom');
+const { MemoryRouter, useLocation } = await load('react-router-dom');
 const EnumerationTab = (await load('/src/components/engagement/EnumerationTab.jsx')).default;
 
 /** Every request the mounted tree has made, so an interaction can be priced. */
@@ -600,6 +600,147 @@ console.log('\nAnd nothing is handed to a row that would defeat the memo:');
     /const latest = useRef\(null\);/.test(tabSource) && /latest\.current = \{/.test(tabSource),
     ''
   );
+}
+
+/* -------------------------------------------------------------------------- */
+console.log('\nAnd a link that names a step opens on that step:');
+{
+  /*
+   * `?tab=enumeration&step=<id>` is what a search result links to — the search reads step titles,
+   * tools, targets, commands and summaries, and a row that dropped somebody at the top of a
+   * sixty-step tree would be worth very little. So a second mount, with the address bar carrying
+   * one, and the assertion is on the title box: whichever step is open is the one it holds.
+   */
+  const second = dom.window.document.createElement('div');
+  dom.window.document.body.appendChild(second);
+  const other = ReactDOMClient.createRoot(second);
+
+  /** The address bar, from inside the router, which is the only place it exists. */
+  let search = null;
+  const Probe = () => {
+    search = useLocation().search;
+    return null;
+  };
+
+  await act(async () => {
+    other.render(
+      React.createElement(
+        ToastProvider,
+        null,
+        React.createElement(
+          UnsavedProvider,
+          null,
+          React.createElement(
+            AuthContext.Provider,
+            {
+              value: {
+                user: { id: 'u1', username: 'ines', role: 'user' },
+                loading: false,
+                login() {},
+                logout() {},
+              },
+            },
+            React.createElement(
+              MemoryRouter,
+              { initialEntries: ['/engagements/x?tab=enumeration&step=s2c3'] },
+              React.createElement(Probe, null),
+              React.createElement(EnumerationTab, {
+                audit,
+                editable: true,
+                onReload: async () => {},
+              })
+            )
+          )
+        )
+      )
+    );
+  });
+  await settle();
+
+  const box = second.querySelector('input[placeholder="Subdomain Enumeration"]');
+  /* s2c3 is the fourth step of the third section — index 2 * 9 + 3, so "Step number 22". */
+  check(
+    'the step named in the address bar is the one open',
+    box?.value === 'Step number 22',
+    JSON.stringify(box?.value)
+  );
+  check(
+    '  and the tab is still on enumeration',
+    (search ?? '').includes('tab=enumeration'),
+    JSON.stringify(search)
+  );
+  /*
+   * And the pointer is spent. Left in place, every reload would drag the reader back to a step
+   * they had navigated away from, and a link copied out of the location bar afterwards would
+   * carry an id that has nothing to do with what is on screen.
+   */
+  check(
+    '  and the pointer is gone once it has been honoured',
+    !(search ?? '').includes('step='),
+    JSON.stringify(search)
+  );
+
+  await act(async () => {
+    other.unmount();
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+console.log('\nAnd a link to a step that is no longer there opens the first one:');
+{
+  const third = dom.window.document.createElement('div');
+  dom.window.document.body.appendChild(third);
+  const other = ReactDOMClient.createRoot(third);
+
+  await act(async () => {
+    other.render(
+      React.createElement(
+        ToastProvider,
+        null,
+        React.createElement(
+          UnsavedProvider,
+          null,
+          React.createElement(
+            AuthContext.Provider,
+            {
+              value: {
+                user: { id: 'u1', username: 'ines', role: 'user' },
+                loading: false,
+                login() {},
+                logout() {},
+              },
+            },
+            React.createElement(
+              MemoryRouter,
+              { initialEntries: ['/engagements/x?tab=enumeration&step=deleted-last-week'] },
+              React.createElement(EnumerationTab, {
+                audit,
+                editable: true,
+                onReload: async () => {},
+              })
+            )
+          )
+        )
+      )
+    );
+  });
+  await settle();
+
+  /*
+   * A step deleted since somebody bookmarked it, or an id from another engagement entirely. The
+   * seeded selection is truthy, so the "nothing chosen yet" effect would not fire and the
+   * workbench would sit on an empty pane with nothing anywhere saying why.
+   */
+  const box = third.querySelector('input[placeholder="Subdomain Enumeration"]');
+  check(
+    'an id the tree does not have falls back to the first row',
+    box?.value === 'Section number 1',
+    JSON.stringify(box?.value)
+  );
+
+  await act(async () => {
+    other.unmount();
+  });
 }
 
 tree.unmount();

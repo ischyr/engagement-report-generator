@@ -45,7 +45,11 @@ import { Notification } from '../models/notification.model.js';
 import { ShareLink } from '../models/share-link.model.js';
 import { Settings } from '../models/settings.model.js';
 import { ACTIONS } from '../models/activity.model.js';
+import { Company } from '../models/company.model.js';
 import { recordActivity } from '../services/activity.service.js';
+import env from '../config/env.js';
+import { looksLikeAddress, mailConfig, sendMail } from '../services/mail/index.js';
+import { shareLinkEmail } from '../services/mail/templates.js';
 import {
   applyClientStatus,
   clientView,
@@ -53,6 +57,7 @@ import {
   issueShareLink,
   MAX_DAYS,
   noteView,
+  portfolioView,
   readShareLink,
   statusView,
 } from '../services/share.service.js';
@@ -62,9 +67,21 @@ import asyncHandler from '../utils/async-handler.js';
 import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { isRestricted } from '../services/classification.service.js';
 import { saveMedia } from '../services/media.service.js';
-import { visibleAuditFilter } from '../utils/audit-scope.js';
+import { visibleAuditFilter, visibleClientFilter } from '../utils/audit-scope.js';
 
 const router = Router();
+
+/**
+ * What to tell somebody whose link cannot do the thing they asked.
+ *
+ * Keyed by kind, because "this link shows progress only" is true of a status link and nonsense on
+ * a client one — and a reader who is told the wrong reason concludes the page is broken rather
+ * than that they have the wrong link.
+ */
+const SHOWS_ONLY = {
+  status: 'This link shows progress only.',
+  client: 'This link shows your engagements. Use the link for that engagement to change anything.',
+};
 
 /**
  * The same shape the intake form uses, and for the same reason.
@@ -98,9 +115,18 @@ router.get(
      * question of the same engagement and is trusted with a different answer — see the two
      * functions in `share.service.js`, which is where what may be seen is actually decided.
      */
-    const body = link.kind === 'status'
-      ? statusView(link)
-      : clientView(link, settings.report?.public?.cvssColors ?? {});
+    const colors = settings.report?.public?.cvssColors ?? {};
+    /*
+     * Three kinds, three whitelists, chosen here and nowhere else. Each answers a different
+     * question of a different scope and is trusted with a different answer — the functions in
+     * `share.service.js` are where what may be seen is actually decided.
+     */
+    const body =
+      link.kind === 'status'
+        ? statusView(link)
+        : link.kind === 'client'
+          ? portfolioView(link, colors)
+          : clientView(link, colors);
     res.json({
       ...body,
       /* So the page can say whose report it is without the client asking. */
@@ -133,7 +159,7 @@ router.post(
      * made about a findings link; a status link has no findings on it at all, and answering "this
      * link is read-only" would imply there is something here it could have written to.
      */
-    if (link.kind === 'status') throw forbidden('This link shows progress only.');
+    if (link.kind !== 'findings') throw forbidden(SHOWS_ONLY[link.kind] ?? 'This link is read-only.');
     if (!link.allowUpdates) throw forbidden('This link is read-only.');
 
     /* Reloaded as a document: `readShareLink` populates a projection, and this one is saved. */
@@ -253,6 +279,35 @@ router.post(
  * question: "they asked and nobody has replied" is a thing to chase rather than a caveat to
  * publish, until somebody decides otherwise.
  */
+/**
+ * Tells whoever is on the engagement that the client said something.
+ *
+ * Lifted out when the third caller appeared. Never throws: the question is recorded by the time
+ * this runs, and failing to announce it must not undo that.
+ */
+async function tellTheTeam(audit, { type, message, findingId = null, target = '' }) {
+  const team = [audit.creator, ...(audit.collaborators ?? [])]
+    .map((person) => String(person?._id ?? person ?? ''))
+    .filter(Boolean);
+  const told = [...new Set(team)];
+  if (!told.length) return;
+
+  await Notification.insertMany(
+    told.map((user) => ({
+      user,
+      type,
+      actor: null,
+      audit: audit._id,
+      auditName: audit.name,
+      findingId,
+      target,
+      message,
+      /* To the tab that holds the conversation: the answer is written there. */
+      href: `/engagements/${audit._id}?tab=questions`,
+    }))
+  ).catch(() => {});
+}
+
 router.post(
   '/:token/findings/:findingId/question',
   shareLimiter,
@@ -265,7 +320,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const link = await readShareLink(req.params.token);
     if (!link) throw notFound('That link is not valid any more.');
-    if (link.kind === 'status') throw forbidden('This link shows progress only.');
+    if (link.kind !== 'findings') throw forbidden(SHOWS_ONLY[link.kind] ?? 'This link is read-only.');
     if (!link.allowUpdates) throw forbidden('This link is read-only.');
 
     const audit = await Audit.findById(link.audit._id);
@@ -307,31 +362,14 @@ router.post(
       }`,
     });
 
-    const team = [audit.creator, ...(audit.collaborators ?? [])]
-      .map((person) => String(person?._id ?? person ?? ''))
-      .filter(Boolean);
-    const told = [...new Set(team)];
-    if (told.length) {
-      await Notification.insertMany(
-        told.map((user) => ({
-          user,
-          type: 'client-asked-question',
-          actor: null,
-          audit: audit._id,
-          auditName: audit.name,
-          findingId: finding._id,
-          target: finding.identifier || finding.title,
-          message: `${link.label || 'The client'} asked about ${
-            finding.identifier || finding.title
-          }: \u201c${req.body.text.slice(0, 120)}${req.body.text.length > 120 ? '\u2026' : ''}\u201d`,
-          /* To the tab that holds the conversation, not to the finding — the answer is written
-             there, and landing on the finding would leave somebody hunting for the box. */
-          href: `/engagements/${audit._id}?tab=questions`,
-        }))
-      ).catch(() => {
-        /* The question is recorded; failing to announce it must not undo that. */
-      });
-    }
+    await tellTheTeam(audit, {
+      type: 'client-asked-question',
+      findingId: finding._id,
+      target: finding.identifier || finding.title,
+      message: `${link.label || 'The client'} asked about ${
+        finding.identifier || finding.title
+      }: \u201c${req.body.text.slice(0, 120)}${req.body.text.length > 120 ? '\u2026' : ''}\u201d`,
+    });
 
     res.status(201).json({
       _id: String(asked._id),
@@ -340,6 +378,151 @@ router.post(
       answer: '',
       answeredAt: null,
     });
+  })
+);
+
+/**
+ * Telling the team something, without it being about one finding.
+ *
+ * The per-finding question above covers "what did you mean by number four". It does not cover the
+ * thing a client is at least as likely to say — *we have a maintenance window on the 12th*, *the
+ * host you tested is being decommissioned*, *who do we talk to about the retest* — and until now
+ * the answer to all of those was to leave the page, find somebody's address, and send an email
+ * that arrives nowhere near the engagement it is about. Which is the same sentence this file
+ * already uses to justify the per-finding one.
+ *
+ * Same permission as that one, deliberately: `allowUpdates`. A read-only link is a statement that
+ * this reader looks and does not touch, and a second switch would be more to explain than it is
+ * worth.
+ *
+ * `context` is empty rather than an id, which is exactly what the question model documents it for:
+ * free text naming what the question is about, and nothing is the honest value when it is about
+ * the engagement rather than a part of it.
+ */
+router.post(
+  '/:token/question',
+  shareLimiter,
+  validate(
+    z.object({
+      text: z.string().trim().min(3, 'Say a little more than that.').max(600),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const link = await readShareLink(req.params.token);
+    if (!link) throw notFound('That link is not valid any more.');
+    if (link.kind !== 'findings') throw forbidden(SHOWS_ONLY[link.kind] ?? 'This link is read-only.');
+    if (!link.allowUpdates) throw forbidden('This link is read-only.');
+
+    const audit = await Audit.findById(link.audit._id);
+    if (!audit || audit.deletedAt) throw notFound('That link is not valid any more.');
+    if (audit.state === 'APPROVED') {
+      throw forbidden('This report is closed. Ask for it to be reopened and we will take a look.');
+    }
+
+    audit.questions.push({
+      text: req.body.text,
+      context: '',
+      fromClient: link.label || 'the client',
+      status: 'open',
+      print: false,
+      askedBy: null,
+    });
+    await audit.save();
+    const asked = audit.questions.at(-1);
+
+    await recordActivity({
+      audit,
+      actor: null,
+      action: ACTIONS.CLIENT_ASKED_QUESTION,
+      target: '',
+      meta: { link: link.label || 'a shared link' },
+      summary: `The client${link.label ? ` (${link.label})` : ''} asked a question about the engagement`,
+    });
+
+    await tellTheTeam(audit, {
+      type: 'client-asked-question',
+      message: `${link.label || 'The client'} asked: \u201c${req.body.text.slice(0, 120)}${
+        req.body.text.length > 120 ? '\u2026' : ''
+      }\u201d`,
+    });
+
+    res.status(201).json({ _id: String(asked._id), text: asked.text, createdAt: asked.createdAt });
+  })
+);
+
+/**
+ * Asking for a closed report to be opened again.
+ *
+ * The one route here that works *because* the report is closed. Every other write refuses an
+ * approved engagement with "tell your contact and they will reopen it" — which sends the client
+ * out of the app to find a human, at the exact moment they have discovered they need something.
+ * Three places said that sentence and none of them offered a way to do it.
+ *
+ * It does not reopen anything. Reopening an approved report is a decision with a signature behind
+ * it and it stays with the team; this is the request, recorded where the team already looks, with
+ * a notification so it is not found a fortnight later. A client who asks twice gets one entry —
+ * there is no value in a queue of identical pleas, and a "you have already asked" is a better
+ * answer than silence.
+ *
+ * Deliberately *not* behind `allowUpdates`. A read-only link means this reader may not change the
+ * report; asking a person for something is not changing the report, and a reader who cannot even
+ * ask is a reader who will phone somebody instead.
+ */
+router.post(
+  '/:token/reopen',
+  shareLimiter,
+  validate(
+    z.object({
+      reason: z.string().trim().max(600).optional().default(''),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const link = await readShareLink(req.params.token);
+    if (!link) throw notFound('That link is not valid any more.');
+    if (link.kind !== 'findings') throw forbidden(SHOWS_ONLY[link.kind] ?? 'This link is read-only.');
+
+    const audit = await Audit.findById(link.audit._id);
+    if (!audit || audit.deletedAt) throw notFound('That link is not valid any more.');
+    if (audit.state !== 'APPROVED') {
+      /* Not an error: the client wants to say something and the report is already open. */
+      return res.json({ ok: true, alreadyOpen: true });
+    }
+
+    const asking = `${link.label || 'The client'} has asked for this report to be reopened.${
+      req.body.reason ? ` \u201c${req.body.reason}\u201d` : ''
+    }`;
+
+    /* One entry however many times they ask — the same request, not a queue of them. */
+    const already = (audit.questions ?? []).find(
+      (question) => question.context === 'reopen' && question.status === 'open'
+    );
+    if (already) {
+      return res.json({ ok: true, alreadyAsked: true });
+    }
+
+    audit.questions.push({
+      text: asking,
+      /* Named rather than empty, so the team can see at a glance which kind of ask this is. */
+      context: 'reopen',
+      fromClient: link.label || 'the client',
+      status: 'open',
+      print: false,
+      askedBy: null,
+    });
+    await audit.save();
+
+    await recordActivity({
+      audit,
+      actor: null,
+      action: ACTIONS.CLIENT_ASKED_QUESTION,
+      target: 'reopening',
+      meta: { link: link.label || 'a shared link' },
+      summary: `The client${link.label ? ` (${link.label})` : ''} asked for the report to be reopened`,
+    });
+
+    await tellTheTeam(audit, { type: 'client-asked-question', message: asking });
+
+    res.status(201).json({ ok: true });
   })
 );
 
@@ -389,7 +572,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const link = await readShareLink(req.params.token);
     if (!link) throw notFound('That link is not valid any more.');
-    if (link.kind === 'status') throw forbidden('This link shows progress only.');
+    if (link.kind !== 'findings') throw forbidden(SHOWS_ONLY[link.kind] ?? 'This link is read-only.');
     if (!link.allowUpdates) throw forbidden('This link is read-only.');
     if (!link.allowEvidence) throw forbidden('This link does not accept attachments.');
 
@@ -529,12 +712,128 @@ const summary = (row, origin = '') => ({
   revokedAt: row.revokedAt ?? null,
   views: row.views ?? 0,
   lastViewedAt: row.lastViewedAt ?? null,
+  /*
+   * Who it was sent to, so the card can say so. Addresses and names only — the token is not here
+   * and never was, and a link somebody pasted by hand has an empty list, which is honest rather
+   * than a gap.
+   */
+  sentTo: (row.sentTo ?? []).map((entry) => ({
+    name: entry.name ?? '',
+    email: entry.email,
+    at: entry.at,
+  })),
+  /** Whether this link chases, how often, and how many it has sent against the cap. */
+  reminder: {
+    everyDays: row.reminder?.everyDays ?? 0,
+    lastAt: row.reminder?.lastAt ?? null,
+    sent: row.reminder?.sent ?? 0,
+  },
   createdAt: row.createdAt,
   createdBy: row.createdBy ?? null,
   /** Live only when it is still good for something, so the UI never offers a dead link. */
   live: !row.revokedAt && row.expiresAt.getTime() > Date.now(),
   origin,
 });
+
+/**
+ * Sends one freshly-issued link to the people named on the request.
+ *
+ * Never throws. A link that was issued is a link that exists, and losing it because a mail server
+ * refused a connection would be the worst possible trade — so every failure comes back as a
+ * description of what did not happen, and the URL is in the response either way.
+ *
+ * Addresses that are not addresses are dropped rather than refused, for the same reason: one
+ * mistyped contact out of four should send the other three, and say which one it could not.
+ */
+async function sendLink({ req, audit, link, token }) {
+  const wanted = req.body.recipients ?? [];
+  if (!wanted.length) return { attempted: false, sent: [], refused: [], reason: '' };
+
+  const settings = await Settings.getSettings();
+  const config = await mailConfig(settings);
+  if (!config.enabled) {
+    return {
+      attempted: true,
+      sent: [],
+      refused: wanted.map((person) => person.email),
+      reason: `${config.reason ?? 'Email is not configured.'} The link is still yours to send by hand.`,
+    };
+  }
+
+  const usable = wanted.filter((person) => looksLikeAddress(person.email));
+  const unusable = wanted.filter((person) => !looksLikeAddress(person.email));
+  if (!usable.length) {
+    return { attempted: true, sent: [], refused: unusable.map((p) => p.email), reason: 'None of those looked like an email address.' };
+  }
+
+  const origin = (env.appUrl ?? '').replace(/\/$/, '');
+  const body = shareLinkEmail({
+    appName: settings.branding?.appName || 'Engy • Report Generation',
+    engagement: audit.name,
+    clientName: audit.company?.name ?? '',
+    kind: link.kind,
+    url: `${origin}/shared/${token}`,
+    expiresAt: link.expiresAt,
+    message: req.body.message,
+    senderName: req.user.fullname || req.user.username,
+    senderEmail: req.user.email ?? '',
+  });
+
+  const to = usable.map((person) => ({ name: person.name ?? '', email: person.email }));
+  if (req.body.copyToMe && req.user.email) {
+    to.push({ name: req.user.fullname || req.user.username, email: req.user.email });
+  }
+
+  let result;
+  try {
+    result = await sendMail(
+      {
+        to,
+        subject: body.subject,
+        text: body.text,
+        html: body.html,
+        /* A client replying to this replies to a person, not to the instance. */
+        replyTo: req.user.email
+          ? { name: req.user.fullname || req.user.username, email: req.user.email }
+          : undefined,
+      },
+      { settings, config }
+    );
+  } catch (error) {
+    return { attempted: true, sent: [], refused: usable.map((p) => p.email), reason: String(error.message ?? error) };
+  }
+
+  if (!result.sent) {
+    return { attempted: true, sent: [], refused: usable.map((p) => p.email), reason: result.reason ?? 'The mail server refused it.' };
+  }
+
+  const bounced = new Set((result.rejected ?? []).map((entry) => String(entry.address).toLowerCase()));
+  const delivered = usable.filter((person) => !bounced.has(String(person.email).toLowerCase()));
+
+  /*
+   * Recorded on the link, which is what makes a reminder possible later and what lets the card
+   * say "sent to three people on Tuesday" instead of nothing at all.
+   */
+  if (delivered.length) {
+    link.sentTo.push(
+      ...delivered.map((person) => ({
+        name: person.name ?? '',
+        email: person.email,
+        client: person.client ?? null,
+        at: new Date(),
+        by: req.user._id,
+      }))
+    );
+    await link.save();
+  }
+
+  return {
+    attempted: true,
+    sent: delivered.map((person) => ({ name: person.name ?? '', email: person.email })),
+    refused: [...unusable.map((p) => p.email), ...[...bounced]],
+    reason: '',
+  };
+}
 
 router.get(
   '/link/:auditId',
@@ -566,6 +865,36 @@ router.post(
       allowEvidence: z.boolean().optional().default(false),
       /** Which question it answers: what was found, or how far along we are. */
       kind: z.enum(['findings', 'status']).optional().default('findings'),
+      /*
+       * Who to send it to, if anybody.
+       *
+       * Optional, and empty is the old behaviour exactly: the URL comes back once and somebody
+       * sends it themselves. Given addresses, the link goes out from here — which is the only
+       * moment it can, because what is stored is a hash and the token is returned once.
+       */
+      recipients: z
+        .array(
+          z.object({
+            name: z.string().trim().max(160).optional().default(''),
+            email: z.string().trim().max(200),
+            /** Set when the address came off the contact list rather than being typed. */
+            client: z.string().regex(/^[0-9a-fA-F]{24}$/).optional(),
+          })
+        )
+        .max(20)
+        .optional()
+        .default([]),
+      /** The covering note, in the sender's words. Empty gets wording chosen by the kind. */
+      message: z.string().max(4000).optional().default(''),
+      copyToMe: z.boolean().optional().default(false),
+      /*
+       * Chase them about what is still open, this often.
+       *
+       * Zero is off and is the default, because this is the only thing the application sends to
+       * somebody outside the firm without being asked at the time. It needs an address, so it
+       * does nothing on a link nobody was sent from here — see `remediation-reminders`.
+       */
+      remindEveryDays: z.number().int().min(0).max(90).optional().default(0),
     })
   ),
   asyncHandler(async (req, res) => {
@@ -573,6 +902,28 @@ router.post(
     if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
 
     const { link, token } = await issueShareLink({ audit, ...req.body, actor: req.user });
+
+    /*
+     * Set after issuing rather than through `issueShareLink`: chasing is a property of this link
+     * having been *sent*, and the send happens below. A link that fails to go out keeps the
+     * setting and simply never becomes due, because nobody is recorded on it.
+     */
+    if (req.body.remindEveryDays) {
+      link.reminder.everyDays = req.body.remindEveryDays;
+      await link.save();
+    }
+
+    /*
+     * And sent, if anybody was named.
+     *
+     * After the link exists and before the response, because this is the one moment the token is
+     * in memory. A failure here must not lose the link — it has been issued, and the URL is in the
+     * response whatever the mail server did — so the outcome is reported alongside it rather than
+     * thrown. Somebody whose SMTP is down still gets a working link to paste, which is what they
+     * had before this existed.
+     */
+    const sending = await sendLink({ req, audit, link, token });
+
     await recordActivity({
       audit,
       actor: req.user,
@@ -583,6 +934,8 @@ router.post(
         kind: req.body.kind,
         /* A status link is read-only whatever was asked for, so the log says what was made. */
         readOnly: req.body.kind === 'status' || !req.body.allowUpdates,
+        /* Who it went to, so the feed answers "was the client told" without asking anybody. */
+        sentTo: sending.sent.map((person) => person.email),
       },
     });
 
@@ -591,6 +944,85 @@ router.post(
       /** The only time this is ever returned. */
       token,
       path: `/shared/${token}`,
+      /** What the mail did, said rather than assumed — see `sendLink`. */
+      sending,
+    });
+  })
+);
+
+/**
+ * A link to everything this app has done for one client.
+ *
+ * Its own route rather than a `kind` on the engagement one, because it is scoped to a different
+ * thing and reached from a different page — and because the two have different consequences if
+ * they leak. An engagement link forwarded to the wrong person exposes one job; this exposes a
+ * client's whole history with the firm, so it is made somewhere a person has deliberately gone.
+ *
+ * Read-only by construction. `issueShareLink` refuses to set `allowUpdates` on this kind, and
+ * every write route in this file resolves an engagement from the link — which one of these does
+ * not have.
+ *
+ * Visibility is the creator's, checked here: somebody may only hand out a view of a client they
+ * can see themselves. `visibleClientFilter` is the same clause the Clients page uses, so a
+ * company nobody has shown this person is not one they can publish.
+ */
+router.post(
+  '/link/company/:companyId',
+  validate(
+    z.object({
+      label: z.string().trim().max(160).optional().default(''),
+      days: z.number().int().min(1).max(MAX_DAYS).optional().default(DEFAULT_DAYS),
+      recipients: z
+        .array(
+          z.object({
+            name: z.string().trim().max(160).optional().default(''),
+            email: z.string().trim().max(200),
+            client: z.string().regex(/^[0-9a-fA-F]{24}$/).optional(),
+          })
+        )
+        .max(20)
+        .optional()
+        .default([]),
+      message: z.string().max(4000).optional().default(''),
+      copyToMe: z.boolean().optional().default(false),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    const company = await Company.findOne({
+      $and: [{ _id: req.params.companyId }, await visibleClientFilter(req.user)],
+    }).select('name');
+    if (!company) throw notFound('Client not found');
+
+    const { link, token } = await issueShareLink({
+      company,
+      kind: 'client',
+      label: req.body.label,
+      days: req.body.days,
+      actor: req.user,
+    });
+
+    /*
+     * Sent the same way an engagement link is, with the company standing in for the engagement in
+     * the wording. No engagement to write an activity entry against, which is the one thing this
+     * route cannot do that its neighbour can — the record is the link itself.
+     */
+    const sending = await sendLink({
+      req,
+      audit: { name: `${company.name} — everything we have done`, company },
+      link,
+      token,
+    });
+
+    res.status(201).json({
+      _id: String(link._id),
+      label: link.label,
+      kind: link.kind,
+      expiresAt: link.expiresAt,
+      token,
+      path: `/shared/${token}`,
+      sending,
     });
   })
 );

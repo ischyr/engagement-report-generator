@@ -42,6 +42,7 @@ import {
   loadEnumerationBody,
   saveEnumerationBody,
 } from '../services/enumeration-body.service.js';
+import { titleFromOutput } from '../services/enumeration-paste.service.js';
 import { htmlToPlainText } from '../services/ooxml/html-parser.js';
 import {
   VAR_NAME,
@@ -231,6 +232,39 @@ const customFieldValue = z.object({
   value: z.any().optional().default(''),
 });
 
+/**
+ * How much prose one field may carry.
+ *
+ * The engagement is a single MongoDB document with a hard 16MB ceiling, and three collections have
+ * already been moved out to stay under it — enumeration bodies, phishing targets, evidence. Each
+ * of those moves is commented with the same failure: reaching the ceiling does not make a page
+ * slow, it makes the next save refuse, mid-operation, with the work still on screen.
+ *
+ * And the fields most likely to receive a very large paste were the only ones with no limit at
+ * all. A finding's description, impact, remediation, proof of concept and affected assets, a
+ * note's content, a section's text: no cap in the schema and none in the model, while
+ * `express.json` accepts sixty megabytes and enumeration output — the field actually designed for
+ * tool dumps — has been capped at two hundred thousand characters all along.
+ *
+ * So: the same number, for the same reason. Two hundred thousand characters is around three
+ * thousand lines, far beyond any write-up, and nowhere near a pasted log. Screenshots do not count
+ * against it — the editor uploads them and stores a `/api/media/<id>` link, precisely because
+ * inlining them "used to be enough to make saving fail outright".
+ *
+ * **Not also on the model.** A `maxlength` there would validate the *whole* document on every
+ * save, so an engagement that already holds an over-long field would refuse every subsequent write
+ * — locking an operator out of their own work to enforce a limit written afterwards. The door is
+ * the right place for this; what is already inside is not made illegal retrospectively.
+ */
+export const PROSE_MAX = 200_000;
+
+/** What to say when somebody hits it, which has to be actionable rather than a number. */
+const tooMuchProse = (field) =>
+  `That ${field} is too long. Tool output belongs on an enumeration step, where it is stored ` +
+  'separately and can be referenced from the finding.';
+
+const prose = (field) => z.string().max(PROSE_MAX, tooMuchProse(field)).optional().default('');
+
 const findingSchema = z.object({
   _id: objectId.optional(),
   // `identifier` is deliberately absent: the server allocates it, because it is
@@ -238,15 +272,15 @@ const findingSchema = z.object({
   // with an existing finding's or renumber one that has already been referenced.
   title: z.string().trim().min(1, 'Finding title is required').max(400),
   vulnType: z.string().trim().max(120).optional().default(''),
-  description: z.string().optional().default(''),
-  observation: z.string().optional().default(''),
-  remediation: z.string().optional().default(''),
+  description: prose('description'),
+  observation: prose('impact'),
+  remediation: prose('remediation'),
   remediationComplexity: z.number().int().min(1).max(3).nullable().optional(),
   priority: z.number().int().min(1).max(4).nullable().optional(),
   references: z.array(z.string().trim()).optional().default([]),
   cvssv3: z.string().trim().max(300).optional().default(CVSS_DEFAULT_VECTOR),
-  scope: z.string().optional().default(''),
-  poc: z.string().optional().default(''),
+  scope: prose('list of affected assets'),
+  poc: prose('proof of concept'),
   status: z.number().int().optional().default(0),
   /** Whose write-up it is. Checked against the team by the route, not by zod. */
   assignedTo: nullableId,
@@ -275,7 +309,7 @@ const sectionSchema = z.object({
   _id: objectId.optional(),
   field: z.string().trim().min(1),
   name: z.string().trim().min(1),
-  text: z.string().optional().default(''),
+  text: prose('section'),
   customFields: z.array(customFieldValue).optional().default([]),
 });
 
@@ -3105,7 +3139,7 @@ router.delete(
 
 const noteSchema = z.object({
   title: z.string().trim().max(200).optional().default('Untitled note'),
-  content: z.string().optional().default(''),
+  content: prose('note'),
   icon: z.string().trim().max(60).optional().default(''),
   pinned: z.boolean().optional().default(false),
 });
@@ -3507,6 +3541,11 @@ const enumerationStepBody = z.object({
   status: z.enum([...ENUMERATION_STATUSES, '']).optional().default(''),
   summary: z.string().trim().max(600).optional().default(''),
   internal: z.boolean().optional(),
+  /*
+   * Saved without a home yet. Set on the way in by a quick paste, cleared when somebody files it —
+   * which is the same write that gives it a parent.
+   */
+  unfiled: z.boolean().optional(),
   printOutput: z.enum(OUTPUT_PRINT_MODES).optional(),
   printLines: z.number().int().min(1).max(5000).optional(),
   parent: objectId.nullable().optional(),
@@ -4044,6 +4083,20 @@ router.post(
 
     /* Text is not part of the step any more; `saveEnumerationBody` below takes it. */
     const { output: newOutput, content: newContent, ...shape } = req.body;
+
+    /*
+     * A paste with no title gets one from its own first line.
+     *
+     * Only for an unfiled paste, and only when nobody typed anything: a step somebody sat down to
+     * create keeps the default title it has always had, because on that path "Untitled step" is a
+     * prompt to name it rather than a gap to fill in. Here there is nobody to prompt — the whole
+     * point of the tray is that the decision was deferred — so the output names itself.
+     */
+    if (shape.unfiled && (!shape.title || shape.title === 'Untitled step')) {
+      const derived = titleFromOutput(newOutput ?? '');
+      shape.title = derived.title;
+      if (!shape.tool) shape.tool = derived.tool;
+    }
     audit.enumeration.push({
       ...shape,
       parent,

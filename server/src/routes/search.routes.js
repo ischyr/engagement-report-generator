@@ -303,6 +303,26 @@ const CANDIDATE_FIELDS = [
   'sections.text',
   'notes.title',
   'notes.content',
+  /*
+   * The enumeration workbench, which the search could not see at all.
+   *
+   * On a red team most of the record is here rather than in the findings: the hosts, the tools and
+   * the invocations live on the steps, and somebody looking for `api-staging.acme.example` was
+   * being told it appeared nowhere while it sat in the target field of four of them. `/search/output`
+   * covered the pasted output — a separate collection, and a separate door because of its size —
+   * but the step itself, the thing the output belongs to, was in neither.
+   *
+   * The metadata only. `output` and `content` are in `EnumerationBody` and stay there;
+   * `outputPreview` is the first 240 characters of the run, stored on the step for the tab's own
+   * filter, and it is here because it costs nothing and it is where a tool announces what it was
+   * pointed at.
+   */
+  'enumeration.title',
+  'enumeration.tool',
+  'enumeration.target',
+  'enumeration.command',
+  'enumeration.summary',
+  'enumeration.outputPreview',
 ];
 
 /**
@@ -347,6 +367,17 @@ const FIELD_WEIGHT = {
   'affected assets': 35,
   text: 25,
   content: 25,
+  /*
+   * The enumeration fields. `target` outranks the tool that was pointed at it, because the host
+   * is what somebody types into this box — "where have I seen this before" is a question about an
+   * asset, not about nmap. `command` is below both: a needle found in an invocation is usually
+   * found in its target as well, and the target hit is the more useful row.
+   */
+  target: 70,
+  tool: 55,
+  command: 40,
+  summary: 30,
+  output: 20,
 };
 
 /**
@@ -449,7 +480,9 @@ router.get(
     const candidates = await Audit.find(
       visibleAuditFilter(req.user, { $and: [await candidateClause(q)] })
     )
-      .select('name reference auditType findings sections notes company classification updatedAt')
+      .select(
+        'name reference auditType findings sections notes enumeration company classification updatedAt'
+      )
       .populate({ path: 'company', select: 'name' })
       .limit(500);
 
@@ -540,6 +573,49 @@ router.get(
         });
       }
 
+      /*
+       * The steps of the operation.
+       *
+       * Linked to the tab rather than to the step, deliberately, and it is worth saying why: the
+       * workbench opens on whatever the address bar names, so `?tab=enumeration&step=<id>` opens
+       * the step this row found. A result that dropped somebody at the top of a sixty-step tree
+       * and left them to find it again is the half-feature this would otherwise have been.
+       *
+       * `internal` travels with the row for the same reason it does in the output search: a step
+       * held back from the report is still the team's own record, and still worth finding, but the
+       * row says so rather than implying the client has seen it.
+       */
+      for (const step of audit.enumeration ?? []) {
+        const stepHit = bestMatch(
+          {
+            title: step.title,
+            tool: step.tool,
+            target: step.target,
+            command: step.command,
+            summary: step.summary,
+            output: step.outputPreview,
+          },
+          regex,
+          q
+        );
+        if (!stepHit) continue;
+        results.push({
+          type: 'step',
+          id: step._id,
+          title: step.title || 'Untitled step',
+          subtitle: `${label} — matched in ${stepHit.field}`,
+          excerpt: stepHit.field === 'title' ? '' : excerptFrom(stepHit.parsed, regex),
+          /** The tool and the target, which is how an operator recognises a step. */
+          tool: step.tool ?? '',
+          target: step.target ?? '',
+          internal: Boolean(step.internal),
+          href: `/engagements/${audit._id}?tab=enumeration&step=${step._id}`,
+          updatedAt: step.updatedAt ?? audit.updatedAt,
+          relevance: stepHit.score + recencyBonus(step.updatedAt ?? audit.updatedAt),
+          matched: stepHit.field,
+        });
+      }
+
       for (const note of audit.notes ?? []) {
         const noteHit = bestMatch({ title: note.title, content: note.content }, regex, q);
         if (!noteHit) continue;
@@ -557,7 +633,7 @@ router.get(
       }
     }
 
-    /* ----------------------------- library entries ---------------------------- */
+    /* ------------------------------ library entries --------------------------- */
     const library = await Vulnerability.find({
       $or: [
         { 'details.title': regex },

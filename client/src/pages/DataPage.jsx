@@ -28,7 +28,7 @@ import { Input, Select, Textarea } from '../components/ui/Field.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
 import { EmptyState, ErrorState, SkeletonRows } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch } from '../hooks/useUrlState.js';
 
 /**
  * Every collection on this page is a flat list with a small form, so they are
@@ -676,7 +676,7 @@ export default function DataPage() {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  const [query, setQuery] = useUrlState('q', '');
+  const [typing, setQuery, query] = useUrlSearch('q', '');
   const [collapsed, setCollapsed] = useState(() => new Set());
 
   const spec = COLLECTIONS[active];
@@ -836,7 +836,7 @@ export default function DataPage() {
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
               {spec.searchIn && all.length > 0 ? (
                 <SearchInput
-                  value={query}
+                  value={typing}
                   onChange={setQuery}
                   placeholder={`Search ${spec.label.toLowerCase()}…`}
                   className="w-full sm:w-64"

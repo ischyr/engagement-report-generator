@@ -58,6 +58,40 @@ of it is unticked is a claim nobody wants to defend.
 There are presets to start from, and a checklist can be edited per engagement without changing the
 firm's copy.
 
+### Getting a methodology in and out
+
+Three ways in, for three different situations:
+
+- **Paste a list.** A methodology copied out of a document: one check per line, and a line ending
+  in a colon or wrapped in `[brackets]` starts a group. Quickest, and it cannot carry a check's
+  description.
+- **Import a file.** JSON, which carries descriptions and groups, and which any instance of this
+  app will read. **Import** on the Checklists page makes new checklists from it; **Import into
+  this** adds its checks to the one you are looking at. Either one shows you the format first —
+  with a worked example you can copy — so you can shape a list from a spreadsheet or a wiki
+  without guessing, and you can drop the file straight onto the dialog.
+- **Duplicate** one you already have.
+
+**Export** gives you the same JSON back — one checklist, or all of them. That is the round trip
+the paste box never had: a methodology curated over two years can go into a repository, to another
+office, or into next year's instance without being retyped.
+
+The file holds a name, a description, and the checks with their groups and descriptions in the
+order you put them in. It deliberately holds nothing about *this* installation — no ids, no
+`builtin` flag, no author — so a file cannot arrive claiming to be one of the methodologies that
+ship with the app, and an imported checklist belongs to whoever imported it.
+
+Importing never overwrites. A check already on the list, by group and wording, is left alone and
+counted as skipped — so importing the same file twice changes nothing, and importing an overlapping
+one adds only the difference. Your own edit to a check's wording survives an import of the original.
+
+The reader is deliberately forgiving, because the file is meant to be edited by hand: it takes the
+file this app writes, a bare list of checklists, one checklist on its own, or just a list of check
+titles. Anything it cannot use is named and counted rather than refusing the whole file.
+
+> [!TIP]
+> `npm run test:checklist-io` covers the round trip and the rules above.
+
 ## Notes
 
 Working notes: what you tried, what did not work, the command that finally did. They never appear

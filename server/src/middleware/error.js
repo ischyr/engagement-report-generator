@@ -54,6 +54,39 @@ export function errorHandler(err, req, res, next) {
     return res.status(413).json(withId(req, { error: 'File is too large (limit is 50 MB)' }));
   }
 
+  /**
+   * The engagement has outgrown what MongoDB will store in one document.
+   *
+   * 16MB, and three collections have already been moved out to stay under it — enumeration
+   * bodies, phishing targets, evidence — each with a comment saying the same thing: reaching the
+   * ceiling does not make a page slow, it makes the next save refuse, mid-work.
+   *
+   * Which until now it did as a 500 and "Internal server error": the least useful possible answer
+   * to somebody who has just lost a paragraph, because it describes the server's feelings rather
+   * than what they should do. The prose fields are capped at the door now, so arriving here means
+   * the *document* is full rather than one field being absurd, and the thing to say is which kind
+   * of content moves out of it.
+   *
+   * Matched on the driver's own codes and on the message, because this arrives by several routes —
+   * a `save()`, a `bulkWrite`, an aggregation — and they do not agree on which code they set.
+   */
+  const tooLarge =
+    err?.code === 10334 ||
+    err?.code === 17419 ||
+    /BSONObjectTooLarge|object to insert too large|resulting document after update is larger/i.test(
+      String(err?.message ?? '')
+    );
+  if (tooLarge) {
+    return res.status(413).json(
+      withId(req, {
+        error:
+          'This engagement has reached the size a single record can hold. Nothing was saved. ' +
+          'Move large tool output onto enumeration steps, which are stored separately, and ' +
+          'attach screenshots rather than pasting them — then try again.',
+      })
+    );
+  }
+
   /* The id is on this line already — `log` puts it there — so the stack is findable from the toast. */
   log.error(err.stack ?? err.message ?? err);
   return res.status(500).json(

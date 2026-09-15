@@ -828,6 +828,27 @@ const enumerationStepSchema = new mongoose.Schema(
     status: { type: String, enum: [...ENUMERATION_STATUSES, ''], default: '' },
 
     /**
+     * Pasted, and not yet part of the narrative.
+     *
+     * The tree is a document: a step belongs under a heading, in the order it happened, with a
+     * title that says what it was for. That is the right shape for writing up and the wrong one
+     * for the moment the output exists — mid-operation, three terminals open, wanting it saved
+     * before it scrolls away. Made to choose a parent and a title first, people paste into a text
+     * file instead and the app never sees it.
+     *
+     * So a step can arrive with nowhere to live. It holds its output like any other, it is
+     * searchable and diffable like any other, and it sits in a tray until somebody files it —
+     * which is a move, and the tree already knows how to do that.
+     *
+     * **It never prints.** An unfiled paste is raw output nobody has read back, so it is held back
+     * from the report exactly as an internal step is — see `enumerationHeldBack`, which is the
+     * one place that decides. Preflight counts them before sign-off, because a paste still in the
+     * tray at the end is either something to file or something to delete, and neither should be
+     * discovered by its absence from a document.
+     */
+    unfiled: { type: Boolean, default: false },
+
+    /**
      * Recorded, but not for the client.
      *
      * The credential that worked, the pivot not worth printing, the note to self. Without this the
@@ -955,19 +976,28 @@ export function enumerationInReadingOrder(audit) {
 }
 
 /**
- * Every step the client must never see: the ones marked internal, and everything under them.
+ * Every step the client must never see: the ones marked internal, the ones nobody has filed yet,
+ * and everything under either.
  *
  * One function because three readers have to agree — the report, the export and the tab. They
  * disagreed once: the report dropped a held-back branch correctly while the CSV export dropped only
  * the row that carried the flag, so a child of an internal section went out in a file. A single
  * definition of "held back" is the only way that stays fixed.
  *
+ * `unfiled` joins it for a different reason than `internal` does. Internal is a decision — this
+ * is ours and not theirs. Unfiled is the absence of one: raw output saved in a hurry that nobody
+ * has read back, given no title worth printing and no place in the narrative. Printing it would
+ * put a wall of nmap in the middle of a chapter; holding it back until somebody files it is what
+ * makes pasting first safe.
+ *
  * The walk is depth-first, so an ancestor is always visited before its children and one pass does it.
  */
 export function enumerationHeldBack(audit) {
   const held = new Set();
   for (const { step } of enumerationInReadingOrder(audit)) {
-    if (step.internal || held.has(String(step.parent ?? ''))) held.add(String(step._id));
+    if (step.internal || step.unfiled || held.has(String(step.parent ?? ''))) {
+      held.add(String(step._id));
+    }
   }
   return held;
 }

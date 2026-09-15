@@ -1,6 +1,7 @@
 {
   "name": "engy-report-server",
   "private": true,
+  "license": "MIT",
   "version": "1.0.0",
   "type": "module",
   "main": "src/index.js",
@@ -61,6 +62,15 @@
     "test:housekeeping": "node src/scripts/housekeeping-test.js",
     "test:workbench": "node src/scripts/workbench-test.js",
     "test:client-question": "node src/scripts/client-question-test.js",
+    "test:views": "node src/scripts/views-test.js",
+    "test:sessions": "node src/scripts/sessions-test.js",
+    "test:share-send": "node src/scripts/share-send-test.js",
+    "test:client-ask": "node src/scripts/client-ask-test.js",
+    "test:reminders": "node src/scripts/reminders-test.js",
+    "test:portfolio": "node src/scripts/portfolio-test.js",
+    "test:checklist-io": "node src/scripts/checklist-io-test.js",
+    "test:unfiled": "node src/scripts/unfiled-test.js",
+    "test:prose-limit": "node src/scripts/prose-limit-test.js",
     "test:library": "node src/scripts/library-test.js",
     "test:verification": "node src/scripts/verification-test.js"
   },

@@ -5,6 +5,7 @@ import { CheckCircle2, Circle, ShieldAlert } from 'lucide-react';
 import { api } from '../lib/api.js';
 import RemediationClaim from '../components/shared/RemediationClaim.jsx';
 import ClientQuestion from '../components/shared/ClientQuestion.jsx';
+import ClientMessage from '../components/shared/ClientMessage.jsx';
 import { cn, formatDate } from '../lib/utils.js';
 import { Card, CardBody, CardHeader } from '../components/ui/Card.jsx';
 import { Button } from '../components/ui/Button.jsx';
@@ -12,6 +13,7 @@ import { Badge } from '../components/ui/Badge.jsx';
 import { Alert } from '../components/ui/Alert.jsx';
 import { LoadingBlock } from '../components/ui/Feedback.jsx';
 import SharedStatus from '../components/share/SharedStatus.jsx';
+import SharedPortfolio from '../components/share/SharedPortfolio.jsx';
 
 /**
  * What a client sees when they open their link.
@@ -110,6 +112,7 @@ export default function SharedFindingsPage() {
    * anything this page decides — the same split the whitelists have on the other side.
    */
   if (data.kind === 'status') return <SharedStatus data={data} />;
+  if (data.kind === 'client') return <SharedPortfolio data={data} />;
 
   const { engagement, counts } = data;
 
@@ -257,6 +260,12 @@ export default function SharedFindingsPage() {
           </CardBody>
         </Card>
       )}
+
+      {/*
+        Below the findings, because it is what somebody reaches for once they have been through
+        them — and because on a closed report it is the only thing on the page that still works.
+      */}
+      <ClientMessage token={token} closed={Boolean(data.closed)} allowUpdates={data.allowUpdates} />
 
       <p className="mt-8 text-center text-[0.6875rem] text-fg-subtle">
         This link is private to you and stops working on {formatDate(data.expiresAt)}.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Archive,
@@ -49,35 +49,50 @@ import { ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Modal } from '../components/ui/Modal.jsx';
 import { SeverityBar, SeverityLegend } from '../components/cvss/CvssEditor.jsx';
 
-import OverviewTab from '../components/engagement/OverviewTab.jsx';
-import FindingsTab from '../components/engagement/FindingsTab.jsx';
-import SectionsTab from '../components/engagement/SectionsTab.jsx';
-import ScopeTab from '../components/engagement/ScopeTab.jsx';
-import NotesTab from '../components/engagement/NotesTab.jsx';
-import QuestionsTab from '../components/engagement/QuestionsTab.jsx';
-import EnumerationTab from '../components/engagement/EnumerationTab.jsx';
-import IntrusiveTab from '../components/engagement/IntrusiveTab.jsx';
-import CredentialsTab from '../components/engagement/CredentialsTab.jsx';
-import TimeTab from '../components/engagement/TimeTab.jsx';
-import DeliveryTab from '../components/engagement/DeliveryTab.jsx';
 import ReportPreview, { ReportPreviewButton } from '../components/engagement/ReportPreview.jsx';
 import EngagementSearch from '../components/engagement/EngagementSearch.jsx';
-import SignaturesTab from '../components/engagement/SignaturesTab.jsx';
 import PreflightPanel from '../components/engagement/PreflightPanel.jsx';
 import ReviewReadiness from '../components/engagement/ReviewReadiness.jsx';
 import ReviewerSuggestions from '../components/engagement/ReviewerSuggestions.jsx';
 import HoldBanner, { HoldButton } from '../components/engagement/HoldBanner.jsx';
-import TestChecksTab from '../components/engagement/TestChecksTab.jsx';
-import DetectionTab from '../components/engagement/DetectionTab.jsx';
-import DocumentsTab from '../components/engagement/DocumentsTab.jsx';
-import EvidenceBin from '../components/engagement/EvidenceBin.jsx';
-import HandoverTab from '../components/engagement/HandoverTab.jsx';
-import KitTab from '../components/engagement/KitTab.jsx';
-import PhishingTab from '../components/engagement/PhishingTab.jsx';
-import RetestTab from '../components/engagement/RetestTab.jsx';
-import ActivityTab from '../components/engagement/ActivityTab.jsx';
 
 import { calculateCvss } from '../lib/cvss.js';
+
+/**
+ * The tabs, fetched when somebody opens one.
+ *
+ * Twenty-one of them, and the page used to import every one statically — so opening an engagement
+ * to read its overview downloaded the phishing campaign, the kit register, the detection log, the
+ * signature pad, the handover checklist and everything else, because they were all in the page's
+ * chunk. Measured at 356 kB before this change, for a tab bar with one tab showing.
+ *
+ * Only the bodies are lazy. Everything that is on the page whatever tab is up — the preflight
+ * panel, the hold banner, the report preview and its button, the search dialog, the two panels in
+ * the review modal — is imported normally, because deferring something already visible buys a
+ * spinner rather than a saving.
+ */
+const OverviewTab = lazy(() => import('../components/engagement/OverviewTab.jsx'));
+const FindingsTab = lazy(() => import('../components/engagement/FindingsTab.jsx'));
+const SectionsTab = lazy(() => import('../components/engagement/SectionsTab.jsx'));
+const ScopeTab = lazy(() => import('../components/engagement/ScopeTab.jsx'));
+const NotesTab = lazy(() => import('../components/engagement/NotesTab.jsx'));
+const QuestionsTab = lazy(() => import('../components/engagement/QuestionsTab.jsx'));
+const EnumerationTab = lazy(() => import('../components/engagement/EnumerationTab.jsx'));
+const IntrusiveTab = lazy(() => import('../components/engagement/IntrusiveTab.jsx'));
+const CredentialsTab = lazy(() => import('../components/engagement/CredentialsTab.jsx'));
+const TimeTab = lazy(() => import('../components/engagement/TimeTab.jsx'));
+const DeliveryTab = lazy(() => import('../components/engagement/DeliveryTab.jsx'));
+const SignaturesTab = lazy(() => import('../components/engagement/SignaturesTab.jsx'));
+const TestChecksTab = lazy(() => import('../components/engagement/TestChecksTab.jsx'));
+const DetectionTab = lazy(() => import('../components/engagement/DetectionTab.jsx'));
+const DocumentsTab = lazy(() => import('../components/engagement/DocumentsTab.jsx'));
+const EvidenceBin = lazy(() => import('../components/engagement/EvidenceBin.jsx'));
+const HandoverTab = lazy(() => import('../components/engagement/HandoverTab.jsx'));
+const KitTab = lazy(() => import('../components/engagement/KitTab.jsx'));
+const PhishingTab = lazy(() => import('../components/engagement/PhishingTab.jsx'));
+const RetestTab = lazy(() => import('../components/engagement/RetestTab.jsx'));
+const ActivityTab = lazy(() => import('../components/engagement/ActivityTab.jsx'));
+
 
 /**
  * Whether an engagement has entered the remediation cycle.
@@ -990,6 +1005,12 @@ export default function EngagementEditorPage() {
 
       <Tabs options={tabsWithCounts} value={tab} onChange={setTab} />
 
+      {/*
+        One boundary for all of them, because exactly one is ever mounted. The fallback is the
+        same block every other loading state in the app uses, so a tab that takes a moment on a
+        slow connection looks like every other wait rather than like a blank page.
+      */}
+      <Suspense fallback={<LoadingBlock label="Loading…" />}>
       {tab === 'overview' ? (
         <OverviewTab audit={audit} editable={editable} onPatch={patchAudit} onReload={reload} />
       ) : null}
@@ -1066,6 +1087,8 @@ export default function EngagementEditorPage() {
       {tab === 'handover' ? <HandoverTab audit={audit} editable={editable} /> : null}
       {tab === 'documents' ? <DocumentsTab audit={audit} editable={canWrite} /> : null}
       {tab === 'kit' ? <KitTab audit={audit} editable={canWrite} /> : null}
+      {tab === 'activity' ? <ActivityTab audit={audit} /> : null}
+      </Suspense>
 
       {/*
         Never a refusal. A lead who knows their reviewer is away and wants the request queued
@@ -1104,7 +1127,6 @@ export default function EngagementEditorPage() {
           <ReviewerSuggestions audit={audit} onAdded={reload} />
         </div>
       </Modal>
-      {tab === 'activity' ? <ActivityTab audit={audit} /> : null}
 
       <EngagementSearch
         open={searchOpen}

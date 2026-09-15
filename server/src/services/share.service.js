@@ -56,6 +56,8 @@ const hash = (token) => crypto.createHash('sha256').update(token).digest('hex');
  */
 export async function issueShareLink({
   audit,
+  /** For a `client` link, which names a company instead. Exactly one of the two. */
+  company = null,
   label = '',
   days = DEFAULT_DAYS,
   allowUpdates = true,
@@ -68,19 +70,27 @@ export async function issueShareLink({
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + lifetime * 24 * 60 * 60 * 1000);
 
+  const forClient = kind === 'client';
+
   const row = await ShareLink.create({
-    audit: audit._id,
+    audit: forClient ? null : audit._id,
+    company: forClient ? (company?._id ?? company) : null,
     tokenHash: hash(token),
     label: String(label ?? '').trim(),
-    /* A status link is a window, never a door: nothing on it can be changed from outside. */
-    allowUpdates: kind === 'status' ? false : Boolean(allowUpdates),
+    /*
+     * A status link is a window, never a door: nothing on it can be changed from outside. A client
+     * link is the same, and more so — there is no route anywhere that writes through one, because
+     * everything writable belongs to an engagement and this names none.
+     */
+    allowUpdates: kind === 'status' || forClient ? false : Boolean(allowUpdates),
     /*
      * Only ever on a findings link that can be written to at all. A status link has no findings
      * on it, and a read-only link that accepted files would be a contradiction somebody would
      * eventually rely on.
      */
-    allowEvidence: kind === 'status' ? false : Boolean(allowUpdates) && Boolean(allowEvidence),
-    kind: kind === 'status' ? 'status' : 'findings',
+    allowEvidence:
+      kind === 'status' || forClient ? false : Boolean(allowUpdates) && Boolean(allowEvidence),
+    kind: ['status', 'client'].includes(kind) ? kind : 'findings',
     expiresAt,
     createdBy: actor?._id ?? null,
   });
@@ -95,9 +105,31 @@ export async function issueShareLink({
  * somebody guessing, and the person holding a real link does not need the distinction to know
  * they should ask for another.
  */
+/**
+ * The engagements a client link covers, fetched separately.
+ *
+ * Not a populate, because there is no array of them on the link — the scope is "this company's
+ * work", which is a query rather than a list, and storing the list would freeze it at the moment
+ * the link was made. An engagement finished last week belongs on a link issued last year.
+ *
+ * Which also means the filters cannot live here. Deciding *which* of a client's engagements an
+ * outsider may see is a disclosure decision, and it belongs with the other three walls in
+ * `portfolioView` where it can be read in one place. This fetches the candidates and the fields
+ * those walls need to judge them.
+ */
+async function engagementsFor(companyId) {
+  const { Audit } = await import('../models/audit.model.js');
+  return Audit.find({ company: companyId, deletedAt: null })
+    .select('name reference auditType date_start date_end state classification findings createdAt')
+    .sort({ date_start: -1 })
+    .limit(200);
+}
+
 export async function readShareLink(token) {
   if (!token || typeof token !== 'string' || token.length < 20) return null;
-  const row = await ShareLink.findOne({ tokenHash: hash(token) }).populate({
+  const row = await ShareLink.findOne({ tokenHash: hash(token) })
+    .populate({ path: 'company', select: 'name' })
+    .populate({
     path: 'audit',
     select:
       'name reference auditType date date_start date_end state deletedAt company findings ' +
@@ -114,9 +146,22 @@ export async function readShareLink(token) {
       'questions',
     populate: { path: 'company', select: 'name' },
   });
-  if (!row || !row.audit || row.audit.deletedAt) return null;
+  if (!row) return null;
   if (row.revokedAt) return null;
   if (row.expiresAt.getTime() < Date.now()) return null;
+
+  /*
+   * A client link is scoped to a company and the work is a query, not a list — so it is fetched
+   * here, and `portfolioView` decides which of it may be shown. Hung on the row rather than
+   * returned separately so every caller of this function keeps the shape it already handles.
+   */
+  if (row.kind === 'client') {
+    if (!row.company) return null;
+    row.engagements = await engagementsFor(row.company._id ?? row.company);
+    return row;
+  }
+
+  if (!row.audit || row.audit.deletedAt) return null;
   return row;
 }
 
@@ -222,6 +267,102 @@ export function clientView(link, cvssColors = {}) {
     allowUpdates: link.allowUpdates,
     /** Whether the page offers to attach a screenshot. Off unless somebody allowed it. */
     allowEvidence: Boolean(link.allowEvidence),
+    /**
+     * Whether the report has been signed off, and therefore whether anything can still be written.
+     *
+     * A boolean rather than the state itself. The client has no use for the difference between
+     * EDIT and REVIEW — both mean "you can still tell us things" — and publishing the team's own
+     * workflow vocabulary to somebody outside the firm says more about how the work is run than
+     * this link is for.
+     *
+     * The page needs it because every write refuses a closed report, and a form that submits into
+     * a refusal is worse than no form. With this it can say so, and offer the one thing that does
+     * still work: asking for it to be reopened.
+     */
+    closed: link.audit?.state === 'APPROVED',
+    expiresAt: link.expiresAt,
+  };
+}
+
+/**
+ * One client's own engagements, read across the years rather than one at a time.
+ *
+ * The widest thing this application will show to somebody with no account, and the reason it is
+ * written the way it is. A findings link leaks one engagement if it is forwarded; this leaks a
+ * client's whole history with the firm — which engagements were run, when, and how they went. So
+ * the question is not "what is useful" but "what is the least that answers the question they open
+ * it for", and the answer they open it for is: *are we getting better, and what is still open*.
+ *
+ * ## Four walls, and every one of them is a filter on the way out
+ *
+ *   1. **Nothing in progress carries numbers.** An engagement that has not been signed off is
+ *      listed by name and state and nothing else. Counting findings on work the client has not
+ *      been given a report for would tell them a result before the team has finished deciding what
+ *      it is — and on a red team, before the client is supposed to know it is happening at all.
+ *   2. **Nothing restricted appears.** A restricted engagement demands a second factor from the
+ *      firm's own staff. It does not go on a page anybody holding a URL can open.
+ *   3. **No finding text, ever.** Counts by severity and nothing else — no titles, no write-ups,
+ *      no hosts. The same rule the status view follows, for the same reason: this is a summary,
+ *      and the detail lives behind a link made for one engagement and one reader.
+ *   4. **Nothing trashed.** Deleted work is deleted, not archived in public.
+ *
+ * Read-only in the strongest sense: there is no route that writes anything through a link of this
+ * kind. Claims, questions, evidence and reopening all belong to an engagement, and this names none.
+ */
+export function portfolioView(link, cvssColors = {}) {
+  const company = link.company;
+  const audits = (link.engagements ?? [])
+    .filter((audit) => !audit.deletedAt)
+    /* Wall 2. `isRestricted` is the same test the app applies to its own staff. */
+    .filter((audit) => audit.classification !== 'restricted')
+    .sort((a, b) => new Date(b.date_start ?? b.createdAt ?? 0) - new Date(a.date_start ?? a.createdAt ?? 0));
+
+  let outstanding = 0;
+  const engagements = audits.map((audit) => {
+    const delivered = audit.state === 'APPROVED';
+    const counts = { Critical: 0, High: 0, Medium: 0, Low: 0, None: 0 };
+    let open = 0;
+
+    if (delivered) {
+      for (const finding of audit.findings ?? []) {
+        const severity = finding.severityOverride || calculateCvss(finding.cvssv3).baseSeverity;
+        if (counts[severity] !== undefined) counts[severity] += 1;
+        if ((finding.clientClaim?.status || '') !== 'fixed') open += 1;
+      }
+      outstanding += open;
+    }
+
+    return {
+      /* An id, so the page can key a row. It opens nothing: there is no route that takes one. */
+      id: String(audit._id),
+      name: audit.name,
+      reference: audit.reference ?? '',
+      type: audit.auditType ?? '',
+      from: audit.date_start ?? '',
+      to: audit.date_end ?? '',
+      /** Wall 1: everything below is null until the report has gone. */
+      delivered,
+      findings: delivered ? (audit.findings ?? []).length : null,
+      open: delivered ? open : null,
+      bySeverity: delivered
+        ? Object.entries(counts).map(([severity, count]) => ({
+            severity,
+            count,
+            color: severityColor(severity, cvssColors),
+          }))
+        : null,
+    };
+  });
+
+  return {
+    kind: 'client',
+    client: company?.name ?? '',
+    engagements,
+    totals: {
+      engagements: engagements.length,
+      delivered: engagements.filter((entry) => entry.delivered).length,
+      outstanding,
+    },
     expiresAt: link.expiresAt,
   };
 }

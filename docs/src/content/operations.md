@@ -37,6 +37,19 @@ npm run test:library-editor # and will not save an entry it has not finished rea
 npm run test:verification # the queue of what clients said, and the wall round each engagement
 npm run test:timeline-window # the operation timeline opens on the latest ten
 npm run test:url-state # filters live in the address bar, and the columns sort
+npm run test:engagement-tabs # every tab of an engagement still opens, now that none arrives with it
+npm run test:views    # saved views are one person's, and point inside this app
+npm run test:sessions # where you are signed in, who may see that, and what signing out does
+npm run test:share-send # the client is sent their link, and the link survives a mail failure
+npm run test:client-ask # what a client can say, including on a report that is closed
+npm run test:reminders # chasing a client, and the ten reasons not to
+npm run test:portfolio # a client's whole history on one link, and the four walls round it
+npm run test:checklist-io # a methodology out as a file and back, into any instance
+npm run test:unfiled  # output pasted with nowhere to put it, and the one rule that makes that safe
+npm run test:prose-limit # a write-up fits, a pasted log does not, and old work stays writable
+npm run test:navigation # a click does not empty the screen, and says so if it takes a moment
+npm run test:typing   # a search box stays ahead of the keys, whatever it is filtering
+npm run test:optimistic # a tick draws at once, and goes back if the server refuses it
 npm run smoke         # renders a report, renders every page, checks contrast
 ```
 
@@ -246,7 +259,7 @@ npm run make:api-token -- --help                     # and the other direction
   that is 99% less read for the eleven that only needed the id, and 59–68% less for the ones that
   read one array.
 - **The search filters in the database.** One search box covers engagements, findings, sections,
-  notes, library entries and clients — and to answer it, the endpoint used to load every
+  enumeration steps, notes, library entries and clients — and to answer it, the endpoint used to load every
   engagement the searcher could see, whole `findings`, `sections` and `notes` arrays, and then
   run an HTML parser over every prose field of every one of them. A firm with two hundred
   engagements read and parsed everything it had ever written to answer `xss`, on every query.
@@ -258,6 +271,21 @@ npm run make:api-token -- --help                     # and the other direction
   engine rather than in Node. `npm run test:search` compares the results against what the
   unfiltered version returned, needle by needle, because a filter that loses a result looks exactly
   like a result that was never there.
+- **And it covers the enumeration workbench**, which it did not. On a red team most of the record
+  is in the steps rather than in the findings — the hosts, the tools, the invocations — so somebody
+  searching for `api-staging.acme.example` was told it appeared nowhere while it sat in the target
+  field of four steps. The step's own fields are in the main search now: title, tool, target,
+  command, summary and the stored 240-character output preview. A target hit outranks a tool hit,
+  which outranks the command that was pointed at it — the host is what people type into that box.
+  Steps held back from the report are found and labelled rather than hidden, since they are still
+  the team's own record, and the row links to `?tab=enumeration&step=<id>`, which opens the
+  workbench on that step instead of at the top of a sixty-step tree.
+
+  The bodies stay where they are. Output and write-ups live in `EnumerationBody`, up to 200 kB a
+  step, and folding them into a search that runs while somebody types would drag megabytes through
+  Node to answer a half-typed query. They have their own door — the "Search tool output" row at the
+  bottom of the results, asked once, by somebody who means it — and `npm run test:search` asserts
+  the main search never opens one.
 - **The dashboard reads finished work separately from live work.** It loaded every engagement
   anybody could see, with its checklist and its findings' titles and authors, and then skipped the
   approved ones in JavaScript — so on an instance with three years of delivered jobs, most of what
@@ -336,6 +364,128 @@ npm run make:api-token -- --help                     # and the other direction
   arrives, would write three empty fields over somebody's write-up. The dialog fetches the entry and
   the save button stays disabled until it has, including when that fetch fails.
   `npm run test:library-editor` holds it shut: with the guard removed, two of its checks fail.
+- **Opening an engagement no longer downloads all twenty-one of its tabs.** The editor page
+  imported every tab body directly, so reading a job's overview fetched the phishing campaign, the
+  kit register, the detection log, the signature pad and the rest of them — a 356 kB chunk to draw
+  a tab bar with one tab showing, and, through the tabs that write prose, the 441 kB rich text
+  editor as well. They are `lazy()` behind a single `Suspense` now: the page is 45 kB, a tab
+  arrives when somebody opens it, and the two largest — findings at 84 kB, enumeration at 68 kB —
+  are fetched only by the people who use them.
+
+  That trades a build-time guarantee for a runtime one, which is why there are two suites rather
+  than one. `npm run test:chunks` reads the built output and asks whether every tab the page
+  lazies still has a chunk of its own; a tab reverting to a static import has no chunk left to
+  name, because rollup folds it into the page, so what it catches is the fold and the page's size
+  budget. `npm run test:engagement-tabs` mounts the page against an engagement with enough on it
+  that every conditional tab appears, and clicks all twenty-one: a dynamic import that cannot
+  resolve is a build that succeeds and a blank tab in production, and nothing else in the suite
+  would see it — the render smoke draws this page in its loading state, having no engagement.
+
+- **The lists you work from are kept, as views.** Several pages hold their state in the address
+  bar, which made a filtered list linkable and reloadable — and unmemorable:
+  `/engagements?state=REVIEW&mine=1&sort=-updatedAt` is the list a reviewer opens every morning,
+  and the only way back to it was to rebuild it from the controls. A view is a name and that
+  address, saved with the star beside **Views** in the sidebar or with `Ctrl+Shift+D`, and it
+  appears there for that person and nobody else.
+
+  A view stores the URL and not the filters. A stored `{ state: 'REVIEW' }` would need migrating
+  every time a page changed its parameters, and would quietly stop matching what the page reads,
+  whereas an address either still works or visibly does not. Saving a place already saved renames
+  it rather than adding a second row, and thirty is the ceiling — the limit is the sidebar, not
+  the storage.
+
+  Nothing is implied about access. The page behind a view asks the same questions of its opener as
+  it ever did, so a view of an engagement somebody has since come off leads to the same refusal.
+  Saving is validated rather than trusted, because the stored string is a link the owner's own
+  browser will follow: `//evil.example` looks like a path and is a host, `javascript:` is not a
+  path at all, and `npm run test:views` asserts each refusal — and that it is the request
+  validator refusing, not only the model behind it.
+
+- **A click no longer empties the screen.** Every page is loaded on demand, which meant the same
+  three frames on each navigation: the click did nothing visible, the content area emptied, a
+  spinner appeared. The wait is unchanged — the chunk takes what it takes — but a reader looking at
+  an empty room has no evidence the click registered, and the usual response to that is to click
+  again. Navigation happens inside a transition now, so the outgoing page stays until the incoming
+  one is ready and the spinner appears only when there is nothing to keep: a first page after
+  signing in, or a reload. The router is told to mark its own updates the same way, which is what
+  reaches the links nothing intercepts — every `<Link>` in the app rather than only the sidebar.
+
+  A thin line along the top says a navigation is happening, after about a fifth of a second.
+  Not sooner, because most navigations are a cached chunk and a warm endpoint and a bar that
+  flashed on every one of them would be saying "slow" about the fastest thing here; and it holds
+  still once drawn rather than blinking out. It never claims to know how far along it is — a
+  dynamic import gives no bytes-so-far, and a percentage that is really a timer is a lie the
+  reader eventually catches. `npm run test:navigation` drives a router at a deliberately slow
+  route and watches what is on screen at each step.
+
+- **And a search box stays ahead of the keys.** Filters live in the address bar, which is what
+  makes a narrowed list linkable. That was right for a dropdown and wrong for a text box the moment
+  the router began treating its own updates as transitions — the value in the box is then
+  transition state, so the character does not appear until the list behind it has re-rendered. On
+  a two-thousand-row library that is a box which visibly trails the typing: the exact complaint
+  the transitions were added to remove, reintroduced by the change that removed it. `useUrlSearch`
+  keeps what the box shows as ordinary state and defers only what the list filters by, so React
+  draws the character first and abandons a list render a later keystroke has already made
+  obsolete. All nine search boxes are on it, and `npm run test:typing` asserts no page binds one
+  straight to the address bar again.
+
+- **Small writes draw before they ask.** Ticking a check on a methodology list was a POST and then
+  a GET before the box moved — two round trips to change a boolean the reader had already decided.
+  Beside the server that is invisible; over a VPN from a client site it is a checkbox that
+  hesitates, forty times down a list. `optimistically` draws the answer first, then writes, then
+  reconciles quietly; a refusal puts the old value back and rethrows, so the `catch` each call
+  site already had still decides what to say. Used for the pins, the shared flag and the
+  engagement's test checks — one field, one row, harmless while in flight. Deliberately not for
+  anything that creates, deletes, sends or signs: the test is whether a rollback would be
+  invisible in consequence, not merely possible. `npm run test:optimistic` holds the request open
+  to assert what is on screen during it, and refuses the write to assert what is on screen after.
+
+- **Signing a session out takes effect at the next refresh, not at once.** The sessions list on
+  the profile page ends one browser without ending the others, which `tokenVersion` — the
+  all-or-nothing control behind a password change — cannot do. What it cannot do either is
+  invalidate the access token that browser is already holding: the token is a signature, and
+  nothing is asked about it until it expires. So a signed-out browser keeps working for up to
+  `JWT_ACCESS_TTL` (30 minutes by default) and is then refused when it tries to refresh. That is
+  the design and not a gap, but it is worth knowing before watching somebody's session end.
+
+  The list is each account's own, and an admin is deliberately no exception — "who is signed in
+  where" is not the same authority as managing accounts, and an admin who needs somebody out
+  disables the account or resets the password, both of which end every session at once.
+  `npm run test:sessions` signs in as several people over real cookies and tries the things that
+  must not work: reading somebody else's list, revoking by a guessed id, and refreshing a session
+  that has been signed out.
+
+  One thing that suite found on its first run: every sign-out was emitting
+  `engy_refresh=; Max-Age=604800`. `res.clearCookie` sets `expires` to the epoch and then merges
+  the caller's options over the top, so the lifetime in the cookie builders won — the value was
+  emptied, so nobody stayed signed in, but the cookie was kept for another week rather than
+  deleted, and Express 5 ignores `maxAge` there, which would have changed the behaviour on the
+  next upgrade. `clearing()` in `middleware/auth.js` strips the lifetime, and the suite asserts
+  the header rather than the effect.
+
+- **There is a ceiling on a write-up, and it is not the one you would guess.** An engagement is
+  a single MongoDB record with a hard 16 MB limit, and three collections have already been moved
+  out to stay under it — enumeration output, phishing targets, evidence. Each of those moves is
+  commented with the same failure, because it is the one that actually happens: reaching the
+  ceiling does not make a page slow, it makes the *next save refuse*, mid-work, with the paragraph
+  still on screen.
+
+  So a finding's description, impact, remediation, proof of concept and affected assets, a note's
+  content and a section's text are each capped at 200,000 characters — the same limit enumeration
+  output has always had, since that is the field designed for tool dumps. That is roughly three
+  thousand lines: far beyond any write-up, nowhere near a pasted scan. Screenshots do not count
+  against it, because the editor uploads them and stores a link rather than inlining the bytes.
+
+  The cap is on the way in and deliberately not on the stored record. A limit on the model would
+  be checked against the *whole* engagement on every save, so an engagement written before the cap
+  existed and holding something longer would refuse every subsequent write — locking somebody out
+  of their own work to enforce a rule invented afterwards. Nothing already written becomes
+  illegal; only new oversized content is refused, and the message says where it belongs.
+
+  And if an engagement reaches the ceiling anyway — the cap is per field, and enough fields add up
+  — the answer is now a 413 saying nothing was saved and what to move, rather than an opaque
+  "internal server error".
+
 - **Indexes are not created automatically in production.** `autoIndex` is on in development and off
   when `NODE_ENV=production`, which is the right default — building an index on a large collection
   at boot is not something to discover during a deployment — but it means a fresh production

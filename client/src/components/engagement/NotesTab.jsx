@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bug, NotebookPen, Pin, PinOff, Plus, Save, Trash2 } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
+import { optimistically, replacing } from '../../lib/optimistic.js';
 import { offerUndo } from '../../lib/undo.js';
 import { saveShortcutLabel } from '../../lib/keys.js';
 import { useToast } from '../../context/ToastContext.jsx';
@@ -28,7 +29,9 @@ import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
  */
 export default function NotesTab({ audit, editable, onOpenFinding }) {
   const toast = useToast();
-  const { data, loading, reload } = useResource(`/audits/${audit._id}/notes`, { initial: [] });
+  const { data, loading, reload, setData } = useResource(`/audits/${audit._id}/notes`, {
+    initial: [],
+  });
 
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState({ title: '', content: '' });
@@ -103,10 +106,16 @@ export default function NotesTab({ audit, editable, onOpenFinding }) {
     toast.info('Loaded the saved version', 'Your unsaved changes were discarded.');
   };
 
+  /* Drawn before it is asked for: a pin is one field, and putting it back costs nothing. */
   const togglePin = async (note) => {
     try {
-      await api.put(`/audits/${audit._id}/notes/${note._id}`, { pinned: !note.pinned });
-      await reload({ quiet: true });
+      await optimistically({
+        from: data,
+        to: replacing(data, note._id, { pinned: !note.pinned }),
+        setData,
+        request: () => api.put(`/audits/${audit._id}/notes/${note._id}`, { pinned: !note.pinned }),
+        reload,
+      });
     } catch (error) {
       toast.fromError(error);
     }

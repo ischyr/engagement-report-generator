@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useSmoothNavigate } from '../../context/NavigationContext.jsx';
 import {
   Building2,
   Clock,
@@ -10,6 +10,7 @@ import {
   ListChecks,
   NotebookPen,
   Search,
+  ScanSearch,
   ScrollText,
   ShieldAlert,
   Terminal,
@@ -33,13 +34,19 @@ const TYPE_META = {
   /* The Sales section's own kinds. `client` is shared — a contact is a contact either way. */
   proposal: { icon: FileSignature, label: 'Proposal' },
   salesClient: { icon: Building2, label: 'Client' },
+  /*
+   * A step of the operation — the same icon the Enumeration tab wears, because that is where the
+   * row goes. Distinct from `output` below: this is the step's own metadata, found without asking,
+   * and the row carries an excerpt like any other. Output is the pasted run, a second search.
+   */
+  step: { icon: ScanSearch, label: 'Step' },
   /* Tool output. Its own kind because a row of it shows the lines, not an excerpt. */
   output: { icon: Terminal, label: 'Output' },
 };
 
 /**
  * Search across everything the user can see — engagements, findings, sections,
- * notes, library entries and contacts.
+ * enumeration steps, notes, library entries and contacts.
  *
  * Opens on Ctrl/Cmd+K and behaves like a command palette: arrow keys move,
  * Enter opens, Escape closes. Findings are the common target, so results show
@@ -52,7 +59,7 @@ const TYPE_META = {
  * deliberately answer in the same shape.
  */
 export default function GlobalSearch() {
-  const navigate = useNavigate();
+  const navigate = useSmoothNavigate();
   const { user, isSales } = useAuth();
   const { queries, opened, remember, forget } = useSearchMemory(
     String(user?.id ?? user?._id ?? '')
@@ -217,7 +224,7 @@ export default function GlobalSearch() {
     if (!query.trim()) {
       return opened.length || queries.length
         ? 'Where you were, and what you looked for'
-        : 'Engagements, findings, sections, notes, library, contacts';
+        : 'Engagements, findings, sections, steps, notes, library, contacts';
     }
     if (!results.length) return 'Nothing found';
     return `${state.total} result${state.total === 1 ? '' : 's'}`;

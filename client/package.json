@@ -1,6 +1,7 @@
 {
   "name": "engy-report-client",
   "private": true,
+  "license": "MIT",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -22,7 +23,11 @@
     "test:enumeration-rows": "node scripts/enumeration-rows-check.mjs",
     "test:library-editor": "node scripts/library-editor-check.mjs",
     "test:timeline-window": "node scripts/timeline-window-check.mjs",
-    "test:url-state": "node scripts/url-state-check.mjs"
+    "test:url-state": "node scripts/url-state-check.mjs",
+    "test:engagement-tabs": "node scripts/engagement-tabs-check.mjs",
+    "test:navigation": "node scripts/navigation-check.mjs",
+    "test:typing": "node scripts/typing-check.mjs",
+    "test:optimistic": "node scripts/optimistic-check.mjs"
   },
   "dependencies": {
     "@tiptap/extension-collaboration": "^2.27.3",

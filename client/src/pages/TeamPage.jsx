@@ -22,7 +22,7 @@ import { StateBadge } from '../components/ui/Badge.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 
 /** Roles read as labels rather than raw field names. */
 const ROLE_LABEL = {
@@ -335,7 +335,7 @@ export default function TeamPage() {
     initial: null,
   });
   const [view, setView] = useUrlState('view', 'people');
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   /** Which engagement cards the reader has opened. */
   const [openIds, setOpenIds] = useState(() => new Set());
 
@@ -457,7 +457,7 @@ export default function TeamPage() {
       <div className="flex flex-wrap items-center gap-3">
         <Tabs options={tabs} value={view} onChange={setView} />
         <SearchInput
-          value={search}
+          value={typing}
           onChange={setSearch}
           placeholder={
             view === 'people' ? 'Search people or their clients…' : 'Search engagements or members…'

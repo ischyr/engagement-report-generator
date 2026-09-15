@@ -35,7 +35,7 @@ import {
   isDeep,
   levelOf,
 } from '../components/team/skills-meta.js';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 
 const VIEWS = [
   { value: 'people', label: 'People', icon: Users },
@@ -67,7 +67,7 @@ export default function SkillsPage() {
   const { data, error, loading, reload } = useResource('/users/skills', { initial: null });
 
   const [view, setView] = useUrlState('view', 'people');
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   const [skillFilter, setSkillFilter] = useState('');
   const [levelFilter, setLevelFilter] = useState('');
   const [sort, setSort] = useUrlState('sort', 'depth');
@@ -326,7 +326,7 @@ export default function SkillsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <Tabs options={VIEWS} value={view} onChange={setView} size="sm" />
         <SearchInput
-          value={search}
+          value={typing}
           onChange={setSearch}
           placeholder="Search a person, skill or certification…"
           className="w-full sm:w-72"

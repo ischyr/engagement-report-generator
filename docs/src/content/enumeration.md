@@ -9,6 +9,23 @@ report.
 > The tab only appears on a red team engagement. Set **Engagement type** to *Red Team Engagement* on
 > the Overview tab and it shows up straight after Findings.
 
+## Paste now, file later
+
+The tree is a document: a step lives under a heading, in the order it happened, with a title that
+says what it was for. That is the right shape for writing up and the wrong one for the moment the
+output exists — mid-operation, three terminals open, wanting it saved before it scrolls away.
+
+**Paste output** (or `Ctrl+Shift+V`) takes a paste and asks nothing else. It becomes a real step —
+searchable, diffable, holding its output like any other — that simply has nowhere to live yet, and
+it waits in the **Unfiled** tray above the tree. Its name comes from the first line of what you
+pasted, which is usually the tool announcing itself and always something you will recognise.
+
+**An unfiled paste never prints.** It is raw output nobody has read back, so it is held back from
+the report and from the exports exactly as a step marked internal is. File it — into a section or
+at the top level — and it joins the tree and starts printing. Preflight counts anything still in
+the tray before sign-off, as a warning rather than a blocker: leaving one there is a decision, and
+so is deleting it, but neither should be discovered later by its absence from a document.
+
 ## Turning it on
 
 The engagement type carries the shape of the work, so choosing the type is all it takes:

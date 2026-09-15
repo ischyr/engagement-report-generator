@@ -28,7 +28,7 @@ import { PageHeader, SearchInput, TagChip, Tabs } from '../components/ui/Misc.js
 import { Button } from '../components/ui/Button.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import { Input, Select, Textarea, Toggle } from '../components/ui/Field.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 import { useTableSort } from '../hooks/useTableSort.js';
 
 /** Kept in step with PROPOSAL_DOC_LABELS on the server. */
@@ -50,7 +50,7 @@ import TestRenderModal from '../components/templates/TestRenderModal.jsx';
 
 function TagReference() {
   const { data, loading } = useResource('/templates/tag-reference');
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   /**
    * Which vocabulary. Two lists rather than one, because they are different documents: a
    * contract has no findings in it, and offering `{{ findings }}` to somebody writing an NDA
@@ -107,7 +107,7 @@ function TagReference() {
           size="sm"
         />
         <SearchInput
-          value={search}
+          value={typing}
           onChange={setSearch}
           placeholder={
             purpose === 'proposal'

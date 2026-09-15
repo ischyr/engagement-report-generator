@@ -96,6 +96,36 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
     );
   }
 
+  /**
+   * Output pasted in a hurry and never filed.
+   *
+   * A warning rather than a blocker, because an unfiled paste is not a fault — it is a note to
+   * self that has not been dealt with, and there are honest reasons to sign off with one sitting
+   * there. But it must be *said*: an unfiled step is held back from the report exactly as an
+   * internal one is, so the alternative is discovering it by its absence from a document, weeks
+   * later, when the person who pasted it has forgotten what it was.
+   *
+   * Two things to do with one, and the message says both: file it, or delete it. Neither is
+   * "leave it and hope".
+   */
+  const unfiled = (audit.enumeration ?? []).filter((step) => step.unfiled);
+  if (unfiled.length) {
+    add(
+      'warning',
+      'enumeration-unfiled',
+      `${unfiled.length} ${unfiled.length === 1 ? 'paste has' : 'pastes have'} not been filed.`,
+      {
+        detail:
+          `In the tray on the Enumeration tab: ${unfiled
+            .slice(0, 3)
+            .map((step) => step.title || 'an untitled paste')
+            .join('; ')}${unfiled.length > 3 ? `, and ${unfiled.length - 3} more` : ''}. ` +
+          'File them into the tree, or delete them — an unfiled paste is held back from the report.',
+        tab: 'enumeration',
+      }
+    );
+  }
+
   if (!audit.template) {
     add('blocker', 'no-template', 'No report template is assigned.', {
       detail: 'Pick one on the Overview tab — nothing can be generated without it.',

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useSmoothNavigate } from '../../context/NavigationContext.jsx';
 import {
   AtSign,
   Bell,
@@ -58,7 +58,7 @@ const TYPE_ICON = {
  * painted under the main column no matter how high its z-index goes.
  */
 export default function NotificationsBar() {
-  const navigate = useNavigate();
+  const navigate = useSmoothNavigate();
   const { items, unread, markRead, markAllRead, clearRead, refresh } = useNotifications();
   const [open, setOpen] = useState(false);
 

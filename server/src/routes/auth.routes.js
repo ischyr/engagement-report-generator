@@ -16,6 +16,7 @@ import asyncHandler from '../utils/async-handler.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
 import {
+  clearing,
   requireAuth,
   signAccessToken,
   signRefreshToken,
@@ -488,18 +489,18 @@ router.post(
     try {
       payload = jwt.verify(token, env.jwt.refreshSecret);
     } catch {
-      res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
-    res.clearCookie(MEDIA_COOKIE, mediaCookieOptions());
-    res.clearCookie(COLLAB_COOKIE, collabCookieOptions());
+      res.clearCookie(REFRESH_COOKIE, clearing(refreshCookieOptions()));
+    res.clearCookie(MEDIA_COOKIE, clearing(mediaCookieOptions()));
+    res.clearCookie(COLLAB_COOKIE, clearing(collabCookieOptions()));
       throw unauthorized('Session expired, please sign in again');
     }
 
     const user = await User.findById(payload.sub);
     // tokenVersion is bumped on logout-everywhere, password changes, and revoked approval.
     if (!user || user.signInBlock() || user.tokenVersion !== payload.version) {
-      res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
-      res.clearCookie(MEDIA_COOKIE, mediaCookieOptions());
-      res.clearCookie(COLLAB_COOKIE, collabCookieOptions());
+      res.clearCookie(REFRESH_COOKIE, clearing(refreshCookieOptions()));
+      res.clearCookie(MEDIA_COOKIE, clearing(mediaCookieOptions()));
+      res.clearCookie(COLLAB_COOKIE, clearing(collabCookieOptions()));
       throw unauthorized('Session is no longer valid');
     }
 
@@ -513,9 +514,9 @@ router.post(
     if (payload.sid) {
       const session = await Session.findOne({ sid: payload.sid }).select('revokedAt');
       if (!session || session.revokedAt) {
-        res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
-        res.clearCookie(MEDIA_COOKIE, mediaCookieOptions());
-        res.clearCookie(COLLAB_COOKIE, collabCookieOptions());
+        res.clearCookie(REFRESH_COOKIE, clearing(refreshCookieOptions()));
+        res.clearCookie(MEDIA_COOKIE, clearing(mediaCookieOptions()));
+        res.clearCookie(COLLAB_COOKIE, clearing(collabCookieOptions()));
         throw unauthorized('That session was signed out');
       }
     }
@@ -538,9 +539,9 @@ router.post(
         /* an expired cookie has nothing left to revoke */
       }
     }
-    res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
-    res.clearCookie(MEDIA_COOKIE, mediaCookieOptions());
-    res.clearCookie(COLLAB_COOKIE, collabCookieOptions());
+    res.clearCookie(REFRESH_COOKIE, clearing(refreshCookieOptions()));
+    res.clearCookie(MEDIA_COOKIE, clearing(mediaCookieOptions()));
+    res.clearCookie(COLLAB_COOKIE, clearing(collabCookieOptions()));
     // Drop presence straight away so signing out does not leave a ghost in the
     // online list until the heartbeat window expires. Best-effort: the caller may
     // not have a valid access token by this point.
@@ -637,9 +638,9 @@ router.delete(
 
     // Ending the session you are in is a sign-out, so the cookies have to go too.
     if (session.sid === currentSid(req)) {
-      res.clearCookie(REFRESH_COOKIE, refreshCookieOptions());
-      res.clearCookie(MEDIA_COOKIE, mediaCookieOptions());
-      res.clearCookie(COLLAB_COOKIE, collabCookieOptions());
+      res.clearCookie(REFRESH_COOKIE, clearing(refreshCookieOptions()));
+      res.clearCookie(MEDIA_COOKIE, clearing(mediaCookieOptions()));
+      res.clearCookie(COLLAB_COOKIE, clearing(collabCookieOptions()));
     }
     res.json({ ok: true, current: session.sid === currentSid(req) });
   })

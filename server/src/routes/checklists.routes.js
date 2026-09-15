@@ -16,6 +16,13 @@ import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
 import { requireWrite } from '../middleware/auth.js';
 import { assertFresh } from '../utils/concurrency.js';
+import {
+  MAX_LISTS,
+  exportFile,
+  exportFilename,
+  mergeChecks,
+  readFile,
+} from '../services/checklist-io.service.js';
 
 const router = Router();
 
@@ -87,6 +94,127 @@ router.get(
   asyncHandler(async (_req, res) => {
     const checklists = await Checklist.find().sort({ builtin: -1, name: 1 });
     res.json(checklists.map(summarise));
+  })
+);
+
+/**
+ * Every checklist, as one file.
+ *
+ * A download rather than a JSON body, because the thing somebody wants is a file they can put in a
+ * repository, mail to another office, or edit and bring back. `Content-Disposition` is what makes
+ * a browser treat it as one.
+ *
+ * Built-ins are included. They are a starting point somebody may well have edited, and a file that
+ * silently dropped half a team's methodology because it began life shipped with the app would be
+ * the wrong kind of clever — what the file does *not* carry is the `builtin` flag itself, so
+ * nothing it brings into another instance wears a badge it did not earn.
+ */
+router.get(
+  '/export',
+  asyncHandler(async (req, res) => {
+    const checklists = await Checklist.find().sort({ name: 1 }).limit(MAX_LISTS);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="checklists.checklist.json"');
+    res.end(JSON.stringify(exportFile(checklists), null, 2));
+  })
+);
+
+/** One of them, named after itself so a folder of these is readable. */
+router.get(
+  '/:id/export',
+  asyncHandler(async (req, res) => {
+    const checklist = await load(req.params.id);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${exportFilename(checklist)}"`
+    );
+    res.end(JSON.stringify(exportFile([checklist]), null, 2));
+  })
+);
+
+/**
+ * Reading one back.
+ *
+ * Two jobs on one route, because they are the same read with a different destination: with `into`
+ * the checks join an existing list, without it each checklist in the file becomes a new one.
+ *
+ * It reports rather than refuses. The file will be hand-edited — that is most of the point of it
+ * being JSON — so a line that cannot be used is counted and described, and the rest goes in. An
+ * import you cannot check is an import nobody trusts, which is the argument the nmap and phishing
+ * importers already make.
+ *
+ * Nothing is overwritten. A check already on the list is skipped rather than replaced: somebody's
+ * own wording on a check they have edited is worth more than a fresh copy of the original.
+ */
+router.post(
+  '/import',
+  requireWrite,
+  validate(
+    z.object({
+      /*
+       * The file's contents, as text or as already-parsed JSON. Text is what a browser reading a
+       * file gives you, and parsing it here rather than there means the error message about a
+       * misplaced comma comes from the same place as every other message about this file.
+       */
+      data: z.union([z.string().max(2_000_000), z.record(z.any()), z.array(z.any())]),
+      /** An existing checklist to add the checks to. Absent creates new ones. */
+      into: z.string().regex(/^[0-9a-fA-F]{24}$/).optional(),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const { checklists, problems, shape } = readFile(req.body.data);
+
+    if (!checklists.length) {
+      throw badRequest(
+        problems.length
+          ? `Nothing could be read from that file. ${problems[0]}`
+          : 'Nothing in that file looked like a checklist.'
+      );
+    }
+
+    /* ---------------------------------------------------- into an existing one --- */
+    if (req.body.into) {
+      const checklist = await load(req.body.into);
+      const checks = checklists.flatMap((entry) => entry.checks);
+      if (!checks.length) throw badRequest('That file has no checks in it.');
+
+      const { added, skipped } = mergeChecks(checklist, checks);
+      checklist.updatedBy = req.user._id;
+      renumber(checklist);
+      await checklist.save();
+
+      return res.json({ into: String(checklist._id), created: [], added, skipped, problems, shape });
+    }
+
+    /* ------------------------------------------------------------- as new ones --- */
+    const created = [];
+    let added = 0;
+    for (const entry of checklists) {
+      /*
+       * A bare list of checks has no name of its own — it is the one accepted shape that cannot
+       * name itself — so it gets one rather than being refused. Anything else keeps what the file
+       * called it, including a name already in use: two methodologies called "Web" from two
+       * offices are two methodologies, and silently merging them would lose one.
+       */
+      const name = entry.name || `Imported ${new Date().toISOString().slice(0, 10)}`;
+      const checklist = new Checklist({
+        name,
+        description: entry.description,
+        /* Never from the file: see the note in `checklist-io.service.js`. */
+        builtin: false,
+        slug: null,
+        createdBy: req.user._id,
+        updatedBy: req.user._id,
+        detailsUpdatedAt: new Date(),
+      });
+      const result = mergeChecks(checklist, entry.checks);
+      added += result.added;
+      await checklist.save();
+      created.push({ _id: String(checklist._id), name: checklist.name, checks: checklist.checks.length });
+    }
+
+    res.status(201).json({ into: null, created, added, skipped: 0, problems, shape });
   })
 );
 

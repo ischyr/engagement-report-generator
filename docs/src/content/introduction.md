@@ -81,6 +81,17 @@ And the smaller edges, worth knowing before they surprise you:
 - The interface is dark-only and English-only. Contrast is checked against WCAG AA by
   `npm run test:contrast`, which `npm run smoke` runs for you.
 
+## What it costs you
+
+MIT. Use it, change it, run it for clients, sell what you build on it — keep the copyright notice
+with it and that is the whole obligation. There is no paid tier, no licence key and nothing phones
+home.
+
+Nothing in that reaches your work. The reports the software generates, the templates you write and
+the client data you put in are yours, and the licence has nothing to say about any of them. Every
+dependency underneath is permissive too — MIT, ISC, BSD, Apache-2.0 or Unlicense, with nothing
+copyleft in the tree — so there is no second obligation hiding below the first.
+
 ## Where to go next
 
 - [Installing and running it](/installation) — Node, MongoDB, the first account.

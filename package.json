@@ -1,6 +1,7 @@
 {
   "name": "engy-report",
   "private": true,
+  "license": "MIT",
   "version": "1.0.0",
   "description": "Engy Report — a modular pentest engagement report generator driven by .docx templates",
   "type": "module",
@@ -91,7 +92,20 @@
     "test:undo": "npm run test:undo --workspace server",
     "test:housekeeping": "npm run test:housekeeping --workspace server",
     "test:workbench": "npm run test:workbench --workspace server",
-    "test:client-question": "npm run test:client-question --workspace server"
+    "test:client-question": "npm run test:client-question --workspace server",
+    "test:engagement-tabs": "npm run test:engagement-tabs --workspace client",
+    "test:views": "npm run test:views --workspace server",
+    "test:sessions": "npm run test:sessions --workspace server",
+    "test:share-send": "npm run test:share-send --workspace server",
+    "test:client-ask": "npm run test:client-ask --workspace server",
+    "test:reminders": "npm run test:reminders --workspace server",
+    "test:portfolio": "npm run test:portfolio --workspace server",
+    "test:checklist-io": "npm run test:checklist-io --workspace server",
+    "test:unfiled": "npm run test:unfiled --workspace server",
+    "test:prose-limit": "npm run test:prose-limit --workspace server",
+    "test:navigation": "npm run test:navigation --workspace client",
+    "test:typing": "npm run test:typing --workspace client",
+    "test:optimistic": "npm run test:optimistic --workspace client"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

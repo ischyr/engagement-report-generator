@@ -180,19 +180,83 @@ behind them is genuinely refused until an admin reopens the report.
 A link can also be made **read-only**, for somebody who should see the position and not change it —
 their auditor, a stakeholder.
 
+## Sending it
+
+You no longer have to. When you make a link, tick the people it is for — they come from the
+contacts on that client, under **Clients & data** — and the app writes to them. The wording follows
+the kind: a progress link says nothing is needed from them, a findings link asks what they have
+fixed, and both state the expiry, because a client who finds a dead link assumes the report was
+withdrawn while one who was told it lasts a month simply asks for another.
+
+The link is still shown to you, whatever happens to the mail, and the card says what the send did —
+who it reached, who it could not, and why. An instance with no mail server configured behaves
+exactly as before: you get the URL and send it yourself.
+
+There is no *resend*, and there will not be. Only a hash of the token is kept, so the app cannot
+show it twice — which is the same reason you cannot recover a lost one. Make another and withdraw
+the old.
+
+### Chasing them
+
+On a findings link you can ask the app to remind them about what is still open — weekly,
+fortnightly or monthly. It stops on its own: when everything has been marked fixed, when the link
+expires or is withdrawn, when the report is signed off, or after five, whichever comes first. The
+reminder says how many are outstanding and nothing about what they are, and the last one says it is
+the last.
+
+It only works on a link the app sent, because otherwise it has no address. And it is off unless you
+turn it on — it is the only thing here that writes to somebody outside your firm without you
+deciding to at that moment.
+
+## What a client can ask for
+
+Two things, beyond the questions about a particular finding:
+
+- **Something that is not about one finding** — a change freeze, a host being decommissioned, who
+  to talk to about the retest. It lands in the Questions tab with everything else they have said.
+- **Reopening a report you have signed off.** Once a report is approved nothing on the link can be
+  changed, and the page used to say "tell your contact". It now offers to ask them for you. It does
+  not reopen anything: that stays your decision, and the request arrives as a question with a
+  notification. Asking twice leaves one request rather than a queue.
+
+The second works even on a read-only link. A reader who may not change the report can still ask a
+person for something — and one who cannot even ask telephones somebody instead.
+
+## A link for the client, not the engagement
+
+From a client's own page there is a third kind: one link showing everything you have done for them.
+Names, dates, counts by severity, and what is still open across all of it — the question a client
+asks at renewal and that previously needed a meeting.
+
+It is the widest thing this app will show to somebody without an account, so it is the most
+restricted:
+
+- **Work you have not reported carries no numbers.** An engagement that is not signed off is a name
+  and a date. Counting findings on a report the client has not been given would tell them a result
+  before you have finished deciding what it is.
+- **Restricted engagements do not appear at all**, by name, reference, or in any total.
+- **No finding titles or write-ups, anywhere.** Counts by severity, and that is all.
+- **Nothing deleted**, and nothing belonging to another client.
+- **Nothing can be written through it.** Claims, questions, evidence and reopening all belong to an
+  engagement, and this link names none — every one of them is refused.
+
+You can only make one for a client you can already see yourself.
+
 ## The link itself
 
-Both kinds work the same way here: the token is 32 random bytes, only its hash is stored, it
+All three kinds work the same way here: the token is 32 random bytes, only its hash is stored, it
 expires, and it can be withdrawn. The engagement's activity log says which kind was made, for whom
-and for how long.
+and for how long — except for a client link, which belongs to no engagement and so has no entry in
+one. The link itself is its record.
 
 
 - 32 random bytes, kept only as a hash. **It is shown once**, when you make it, and cannot be shown
   again — the app genuinely does not have it. Lose it and you make another.
 - It expires. A week, a month, three or six — whatever you choose when you make it.
 - It can be withdrawn at any time, and stops working immediately.
-- It is scoped to one engagement, it cannot read anything else, and it is not a login: the rest of
-  the app still refuses it.
+- It is scoped to one engagement — or, for a client link, to one client's reported work — it can
+  read nothing else, and it is not a login: the rest of the app still refuses it.
+- The list shows who the app sent it to and when, if it sent it, and whether it is chasing them.
 - The list shows how often each link has been opened and when it was last used. Not by whom, and
   not from where — the address a client reads their report from is their information, not yours.
 

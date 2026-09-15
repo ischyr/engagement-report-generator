@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   Banknote,
   Building2,
@@ -36,10 +36,13 @@ import { useAuth, useBranding } from '../../context/AuthContext.jsx';
 import { usePresence } from '../../context/PresenceContext.jsx';
 import FollowBar, { routeForLocation } from './FollowBar.jsx';
 import { useUnsaved } from '../../context/UnsavedContext.jsx';
+import { useSmoothNavigate } from '../../context/NavigationContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
 import { cn, displayName } from '../../lib/utils.js';
 import { Avatar } from '../ui/Misc.jsx';
 import GlobalSearch from './GlobalSearch.jsx';
+import SavedViews from './SavedViews.jsx';
+import NavigationProgress from './NavigationProgress.jsx';
 import NotificationsBar from './NotificationsBar.jsx';
 import { Button } from '../ui/Button.jsx';
 /* For the Suspense boundary around the Outlet: pages arrive on demand. See App.jsx. */
@@ -182,7 +185,13 @@ function Brand({ onNavigate }) {
 }
 
 function NavItem({ item, onNavigate }) {
-  const navigate = useNavigate();
+  /*
+   * The smooth one: the page being left stays on screen until the next one's chunk has arrived,
+   * rather than the content area emptying to a spinner the moment the click lands. The guard is
+   * still asked first and deliberately outside the transition — "do you want to lose this draft"
+   * is a dialog, and a dialog that arrives late is worse than no dialog.
+   */
+  const navigate = useSmoothNavigate();
   const { guard } = useUnsaved();
 
   return (
@@ -192,6 +201,14 @@ function NavItem({ item, onNavigate }) {
       // Leaving the page an editor is on is the commonest way to lose a draft, so the
       // click is intercepted and asked about rather than followed straight away.
       onClick={(event) => {
+        /*
+         * A modified click belongs to the browser. This intercepted every click, including
+         * Ctrl-, Cmd- and middle-click, so opening a section in a second tab — which is how
+         * anybody works on two engagements at once — quietly navigated this one instead.
+         */
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+          return;
+        }
         event.preventDefault();
         guard(() => {
           navigate(item.to);
@@ -406,6 +423,13 @@ function SidebarContent({ onNavigate }) {
           ? null
           : NAV.map((item) => <NavItem key={item.to} item={item} onNavigate={onNavigate} />)}
 
+        {/*
+          The lists somebody works from, above Incoming rather than at the bottom: they are the
+          reason this person opened the app, and a section nobody scrolls to is a section nobody
+          saves into. Draws nothing at all until there is either a view or a page worth saving.
+        */}
+        {isSales ? null : <SavedViews onNavigate={onNavigate} />}
+
         {/* Work asked for and work won, kept apart from the jobs themselves. */}
         {isSales ? null : (
           <>
@@ -500,6 +524,12 @@ export function AppShell() {
           </aside>
         </div>
       ) : null}
+
+      {/*
+        The only feedback between a click and a page, now that the click no longer empties the
+        screen. Draws nothing until a navigation has taken longer than a person reads as instant.
+      */}
+      <NavigationProgress />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line-soft bg-canvas/85 px-4 backdrop-blur lg:hidden">

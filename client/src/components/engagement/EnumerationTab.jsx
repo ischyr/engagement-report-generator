@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ChevronsDownUp,
   ChevronsUpDown,
+  ClipboardPaste,
   Download,
   EyeOff,
   History,
@@ -33,6 +34,7 @@ import { ConfirmDialog } from '../ui/Modal.jsx';
 import ConflictDialog from '../ui/ConflictDialog.jsx';
 import { EmptyState, LoadingBlock } from '../ui/Feedback.jsx';
 import EnumerationTree from './EnumerationTree.jsx';
+import UnfiledTray, { QuickPasteDialog } from './enumeration/UnfiledTray.jsx';
 import EnumerationEditor from './enumeration/EnumerationEditor.jsx';
 import {
   BLANK,
@@ -75,7 +77,19 @@ export default function EnumerationTab({
     initial: [],
   });
 
-  const [selectedId, setSelectedId] = useState(null);
+  /**
+   * The step the address bar names, if it names one.
+   *
+   * `?tab=enumeration&step=<id>` is what a search result links to — the search covers step titles,
+   * tools, targets, commands and summaries now, and a row that opened the tab at the top of a
+   * sixty-step tree and left somebody to find their own way back would be worth very little.
+   *
+   * Read once, into the initial state, rather than watched: this is where to *start*, not a
+   * binding. Clicking a different step afterwards must not be argued with by the URL, and the URL
+   * is cleared below the moment it has been honoured, so a reload does not drag the reader back.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedId, setSelectedId] = useState(() => searchParams.get('step') ?? null);
   /**
    * The body of the step being read, fetched on its own.
    *
@@ -191,6 +205,16 @@ export default function EnumerationTab({
   useEffect(() => {
     const onKey = (event) => {
       if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+      if (event.key.toLowerCase() === 'v') {
+        /*
+         * Ctrl+Shift+V opens the paste box. Not a plain paste handler on the page: the workbench
+         * is full of fields somebody is legitimately pasting into, and a global listener that
+         * swallowed a paste meant for the write-up would be far worse than a shortcut nobody finds.
+         */
+        event.preventDefault();
+        setPasting(true);
+        return;
+      }
       if (event.key.toLowerCase() !== 'e') return;
       event.preventDefault();
       setJumpOpen(true);
@@ -201,8 +225,73 @@ export default function EnumerationTab({
 
   useUnsavedWork(dirty, 'This enumeration step', () => save());
 
+  /**
+   * A paste, saved with nothing else asked for.
+   *
+   * The title comes from the output on the server — see `enumeration-paste.service` — because a
+   * dialog that asked for one would put back the decision this exists to defer.
+   */
+  const quickPaste = async (output) => {
+    setTrayBusy(true);
+    try {
+      await api.post(`/audits/${audit._id}/enumeration`, { output, unfiled: true, parent: null });
+      await reload({ quiet: true });
+      toast.success('Saved to the tray', 'File it into the tree when there is time.');
+    } catch (error) {
+      toast.fromError(error);
+    } finally {
+      setTrayBusy(false);
+    }
+  };
+
+  /**
+   * Filing: it stops being unfiled, and it takes a place in the tree.
+   *
+   * Two writes, deliberately. The step patch omits `parent` — moving a step is its own operation,
+   * with its own rules about cycles and ordering, and `enumeration-order` is where those live. A
+   * route that did both would be a second place that knows how to move a step, which is how the
+   * two come to disagree.
+   *
+   * The move is skipped when it would be a no-op: filing at the top level is exactly what the step
+   * already is, and asking the reorder route to confirm that is a write for nothing.
+   */
+  const fileStep = async (step, parent) => {
+    setTrayBusy(true);
+    try {
+      await api.put(`/audits/${audit._id}/enumeration/${step._id}`, { unfiled: false });
+      if (parent) {
+        await api.put(`/audits/${audit._id}/enumeration-order`, {
+          order: [{ id: String(step._id), parent }],
+        });
+      }
+      await reload({ quiet: true });
+      toast.success('Filed', parent ? undefined : 'At the top level — drag it where it belongs.');
+    } catch (error) {
+      toast.fromError(error);
+    } finally {
+      setTrayBusy(false);
+    }
+  };
+
   /* The server sends reading order with a depth on each row; trusting it keeps one definition. */
-  const rows = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const all = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+
+  /*
+   * The tray and the tree, split here rather than inside the tree.
+   *
+   * An unfiled paste is not part of the document yet — it has no place in the reading order and no
+   * title anybody chose — so putting it in the tree would mean teaching every row, the keyboard
+   * walk, the drag handling and the numbering about a row that is none of those things. Splitting
+   * the list is one line and leaves all of that exactly as it was.
+   */
+  const unfiled = useMemo(() => all.filter((row) => row.unfiled), [all]);
+  const rows = useMemo(() => all.filter((row) => !row.unfiled), [all]);
+
+  /** Where a paste can be filed to: anything already in the tree that can hold children. */
+  const sections = useMemo(() => rows.filter((row) => (row.depth ?? 0) === 0), [rows]);
+
+  const [pasting, setPasting] = useState(false);
+  const [trayBusy, setTrayBusy] = useState(false);
   /*
    * The light row with its body laid over it, once that has arrived.
    *
@@ -255,8 +344,28 @@ export default function EnumerationTab({
   const position = siblings.findIndex((row) => idOf(row._id) === idOf(selectedId));
 
   useEffect(() => {
-    if (!selectedId && rows.length) setSelectedId(rows[0]._id);
+    if (!rows.length) return;
+    /*
+     * Nothing chosen, or a choice the tree cannot honour — an id from a link to a step that has
+     * since been deleted, or one belonging to another engagement entirely. Either way the first
+     * row, rather than a workbench sitting on an empty pane with no way to say why.
+     */
+    if (!selectedId || !rows.some((row) => idOf(row._id) === idOf(selectedId))) {
+      setSelectedId(rows[0]._id);
+    }
   }, [rows, selectedId]);
+
+  /*
+   * And the pointer is spent once the tree has arrived. It said where to open; leaving it in the
+   * address bar would make every later reload jump back to it, and would put a stale id in any
+   * link copied out of the location bar afterwards.
+   */
+  useEffect(() => {
+    if (!rows.length || !searchParams.get('step')) return;
+    const params = new URLSearchParams(searchParams);
+    params.delete('step');
+    setSearchParams(params, { replace: true });
+  }, [rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* One step's body, when it is opened. Cached, so going back to it costs nothing. */
   useEffect(() => {
@@ -919,6 +1028,22 @@ export default function EnumerationTab({
               title="Read this chapter the way the report will print it"
               onClick={() => openPreview()}
             />
+            {/*
+              Before "New section", because it is the one that gets pressed in a hurry — and the
+              two are opposite motions: this saves something and defers every decision about it,
+              that one makes a place for work not done yet.
+            */}
+            {editable ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={ClipboardPaste}
+                onClick={() => setPasting(true)}
+                title="Save output now and file it later (Ctrl+Shift+V)"
+              >
+                Paste output
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" icon={LayoutList} onClick={openPresets}>
               From a preset
             </Button>
@@ -1247,6 +1372,21 @@ export default function EnumerationTab({
             ) : null}
 
             <div className={cn(asPage ? 'min-h-0 flex-1 overflow-auto' : '')}>
+              {/*
+                Above the tree, and absent when there is nothing in it: a permanent empty tray is a
+                permanent reminder of a thing nobody is doing.
+              */}
+              <UnfiledTray
+                rows={unfiled}
+                sections={sections}
+                selectedId={selectedId}
+                onSelect={onSelectRow}
+                onFile={fileStep}
+                onDelete={(row) => setPendingDelete(row)}
+                editable={editable}
+                busy={trayBusy}
+              />
+
               <EnumerationTree
                 rows={rows}
                 visible={visible}
@@ -1341,6 +1481,13 @@ export default function EnumerationTab({
             ? `"${pendingDelete?.title || 'Untitled step'}" and everything nested under it will be removed, output and screenshots included. This cannot be undone.`
             : `"${pendingDelete?.title || 'Untitled step'}" will be removed, output and screenshots with it. This cannot be undone.`
         }
+      />
+
+      <QuickPasteDialog
+        open={pasting}
+        onClose={() => setPasting(false)}
+        onSave={quickPaste}
+        busy={trayBusy}
       />
 
       <ConfirmDialog

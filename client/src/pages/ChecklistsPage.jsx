@@ -3,20 +3,23 @@ import { Link } from 'react-router-dom';
 import {
   ClipboardCheck,
   Copy,
+  Download,
   FolderOpen,
   ListChecks,
   Pencil,
   Plus,
   Save,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 
 import { api } from '../lib/api.js';
+import { optimistically } from '../lib/optimistic.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
-import { cn, displayName, timeAgo } from '../lib/utils.js';
+import { cn, displayName, downloadBlob, filenameFromResponse, timeAgo } from '../lib/utils.js';
 
 import { Card, CardBody, CardHeader } from '../components/ui/Card.jsx';
 import { PageHeader, SearchInput } from '../components/ui/Misc.jsx';
@@ -26,9 +29,70 @@ import { Input, Select, Textarea } from '../components/ui/Field.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import ConflictDialog from '../components/ui/ConflictDialog.jsx';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { Alert } from '../components/ui/Alert.jsx';
+import ChecklistImportModal from '../components/checklists/ChecklistImportModal.jsx';
+import { useUrlSearch, useUrlState } from '../hooks/useUrlState.js';
 
 const UNGROUPED = 'Ungrouped';
+
+/**
+ * Taking a methodology out as a file, and reading one back.
+ *
+ * The paste box beside this covers a list copied out of a document, and it is the right tool for
+ * that. What it cannot do is carry a check's *description*, and what comes out of the app is not
+ * something the app can read in — so a methodology curated over two years lives in one instance
+ * and gets retyped into the next. This is the round trip.
+ *
+ * The same shape the library's export uses: `api.raw` for the download, because the filename is
+ * in the response and inventing one here would mean two places deciding what a file is called.
+ */
+function useChecklistFile({ onImported, toast }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const exportTo = async (path, fallback) => {
+    setBusy(true);
+    try {
+      const response = await api.raw(path);
+      downloadBlob(await response.blob(), filenameFromResponse(response, fallback));
+    } catch (error) {
+      toast.fromError(error, 'Could not export that');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * @param {File} file the JSON somebody picked
+   * @param {string} [into] an existing checklist to add the checks to, or nothing to create
+   */
+  const importFrom = async (file, into) => {
+    setBusy(true);
+    setResult(null);
+    try {
+      /*
+       * Sent as text rather than parsed here. The reader on the server accepts four shapes and
+       * says exactly what it made of each, and parsing in two places would mean two different
+       * messages about the same misplaced comma.
+       */
+      const outcome = await api.post('/checklists/import', { data: await file.text(), into });
+      setResult(outcome);
+      await onImported?.();
+      toast.success(
+        outcome.into
+          ? `Added ${outcome.added} check${outcome.added === 1 ? '' : 's'}`
+          : `Imported ${outcome.created.length} checklist${outcome.created.length === 1 ? '' : 's'}`,
+        outcome.skipped ? `${outcome.skipped} were already there.` : undefined
+      );
+    } catch (error) {
+      toast.fromError(error, 'Could not read that file');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { busy, result, clearResult: () => setResult(null), exportTo, importFrom };
+}
 
 /** New checklist, optionally starting from a paste. */
 function NewChecklistModal({ open, onClose, onCreated }) {
@@ -374,7 +438,7 @@ export default function ChecklistsPage() {
 
   const list = useResource('/checklists', { initial: [] });
   const [selectedId, setSelectedId] = useState(null);
-  const [search, setSearch] = useUrlState('q', '');
+  const [typing, setSearch, search] = useUrlSearch('q', '');
   const [creating, setCreating] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -435,14 +499,52 @@ export default function ChecklistsPage() {
       auditName: audit.name,
       matchOf: (check) =>
         trackedByKey.get(`${check.category ?? ''}|${check.title}`.trim().toLowerCase()) ?? null,
+      /*
+       * The one that mattered most. A methodology list is forty boxes and somebody goes down it
+       * ticking them; each tick was a POST and then a GET before the box moved, which over a VPN
+       * from a client site is a checkbox that hesitates forty times.
+       *
+       * A check nobody has touched yet has no row at all — the engagement only stores the ones
+       * that were ticked — so the optimistic update has to invent one. The id is a placeholder
+       * and lives for exactly as long as the request: the quiet reload replaces it with the row
+       * the server made, and a failure puts the whole list back the way it was.
+       */
       onToggle: async (check, done) => {
-        await api.post(`/audits/${auditId}/test-checks/toggle`, {
-          title: check.title,
-          category: check.category ?? '',
-          description: check.description ?? '',
-          done,
+        const key = `${check.category ?? ''}|${check.title}`.trim().toLowerCase();
+        const rows = tracked.data ?? [];
+        const already = rows.some(
+          (row) => `${row.category ?? ''}|${row.title}`.trim().toLowerCase() === key
+        );
+        const to = already
+          ? rows.map((row) =>
+              `${row.category ?? ''}|${row.title}`.trim().toLowerCase() === key
+                ? { ...row, done }
+                : row
+            )
+          : [
+              ...rows,
+              {
+                _id: `pending:${key}`,
+                title: check.title,
+                category: check.category ?? '',
+                description: check.description ?? '',
+                done,
+              },
+            ];
+
+        await optimistically({
+          from: rows,
+          to,
+          setData: tracked.setData,
+          request: () =>
+            api.post(`/audits/${auditId}/test-checks/toggle`, {
+              title: check.title,
+              category: check.category ?? '',
+              description: check.description ?? '',
+              done,
+            }),
+          reload: tracked.reload,
         });
-        await tracked.reload({ quiet: true });
       },
     };
   }, [audit, auditId, canWrite, trackedByKey, tracked]);
@@ -454,6 +556,19 @@ export default function ChecklistsPage() {
 
   const detail = useResource(selectedId ? `/checklists/${selectedId}` : null, { initial: null });
   const selected = detail.data;
+
+  /*
+   * Two file inputs rather than one. The same picker cannot mean "make new checklists" one moment
+   * and "add these to the one I am looking at" the next without somebody eventually picking the
+   * wrong one — and the difference between those two is forty checks in the wrong place.
+   */
+  /*
+   * Where an import would put things, or `null` when the dialog is closed. One piece of state
+   * rather than two flags: it is the same dialog either way and only the destination differs, so
+   * a pair of booleans would have a fourth state that means nothing.
+   */
+  const [importing, setImporting] = useState(null);
+  const files = useChecklistFile({ toast, onImported: () => reloadBoth() });
 
   const reloadBoth = async () => {
     await Promise.all([list.reload({ quiet: true }), detail.reload({ quiet: true })]);
@@ -602,13 +717,73 @@ export default function ChecklistsPage() {
         title="Checklists"
         description="The methodologies an engagement's test list is started from. Add your own, prune the shipped ones."
         actions={
-          canWrite ? (
-            <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-              New checklist
+          <div className="flex flex-wrap items-center gap-2">
+            {/*
+              Exporting is a read, so it is offered to anybody who can see the page — including a
+              read-only account, which is the one most likely to want a copy for a repository.
+            */}
+            <Button
+              variant="ghost"
+              icon={Download}
+              disabled={files.busy}
+              onClick={() => files.exportTo('/checklists/export', 'checklists.checklist.json')}
+            >
+              Export all
             </Button>
-          ) : null
+            {canWrite ? (
+              <>
+                <Button
+                  variant="ghost"
+                  icon={Upload}
+                  disabled={files.busy}
+                  onClick={() => setImporting({ into: null, name: '' })}
+                >
+                  Import
+                </Button>
+                <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
+                  New checklist
+                </Button>
+              </>
+            ) : null}
+          </div>
         }
       />
+
+      {/*
+        What the last import made of the file. Beside the page rather than in a toast, because a
+        file that was half understood needs reading rather than glancing at.
+      */}
+      {files.result ? (
+        <Alert
+          tone={files.result.problems?.length ? 'warning' : 'success'}
+          title={
+            files.result.into
+              ? `Added ${files.result.added} check${files.result.added === 1 ? '' : 's'}`
+              : `Imported ${files.result.created.length} checklist${
+                  files.result.created.length === 1 ? '' : 's'
+                }`
+          }
+          action={
+            <Button variant="ghost" size="icon-sm" icon={X} aria-label="Dismiss" onClick={files.clearResult} />
+          }
+        >
+          <p className="text-[0.6875rem]">
+            {files.result.skipped
+              ? `${files.result.skipped} were already there and were left alone. `
+              : ''}
+            {files.result.created?.length
+              ? files.result.created.map((entry) => `${entry.name} (${entry.checks})`).join(', ')
+              : ''}
+          </p>
+          {files.result.problems?.length ? (
+            <ul className="mt-1 list-inside list-disc text-[0.6875rem]">
+              {files.result.problems.slice(0, 8).map((problem) => (
+                <li key={problem}>{problem}</li>
+              ))}
+            </ul>
+          ) : null}
+        </Alert>
+      ) : null}
 
       {/* One control, above everything it scopes: which engagement a tick belongs to. */}
       <div className="flex flex-wrap items-center gap-3 rounded-card border border-line-soft bg-surface/60 px-4 py-3">
@@ -767,6 +942,43 @@ export default function ChecklistsPage() {
                         <Button variant="secondary" size="sm" icon={Plus} onClick={() => setBulkOpen(true)}>
                           Paste a list
                         </Button>
+                        {/*
+                          One methodology as a file: for a repository, for another office, or for
+                          the next instance. A read, so it is offered whether or not this account
+                          may change anything.
+                        */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={Download}
+                          disabled={files.busy}
+                          onClick={() =>
+                            files.exportTo(
+                              `/checklists/${selected.id ?? selected._id}/export`,
+                              'checklist.json'
+                            )
+                          }
+                          title="Download this checklist as a file"
+                        >
+                          Export
+                        </Button>
+                        {/*
+                          A file, where the paste box takes text. The paste box cannot carry a
+                          check's description and cannot read back what this app wrote; this can do
+                          both, which is what makes a methodology portable between installations.
+                        */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={Upload}
+                          disabled={files.busy}
+                          onClick={() =>
+                            setImporting({ into: selected.id ?? selected._id, name: selected.name })
+                          }
+                          title="Add the checks from a file to this checklist"
+                        >
+                          Import into this
+                        </Button>
                         {mayDelete(selected) ? (
                           <Button
                             variant="ghost"
@@ -836,7 +1048,7 @@ export default function ChecklistsPage() {
                 <CardBody>
                   {(selected.checks?.length ?? 0) > 8 ? (
                     <SearchInput
-                      value={search}
+                      value={typing}
                       onChange={setSearch}
                       placeholder="Filter these checks…"
                       className="mb-4 w-full sm:w-72"
@@ -915,6 +1127,19 @@ export default function ChecklistsPage() {
           await list.reload({ quiet: true });
           setSelectedId(created._id);
         }}
+      />
+
+      {/*
+        The format, before the picker. Somebody with a methodology in a spreadsheet is willing to
+        shape it into JSON and has no idea what shape — and a picker that opens straight into a
+        file dialog teaches them nothing when the file turns out to be wrong.
+      */}
+      <ChecklistImportModal
+        open={Boolean(importing)}
+        onClose={() => setImporting(null)}
+        into={importing?.name || ''}
+        busy={files.busy}
+        onPick={(file) => files.importFrom(file, importing?.into ?? undefined)}
       />
 
       <BulkAddModal

@@ -24,6 +24,7 @@ import checklistsRoutes from './checklists.routes.js';
 import searchRoutes from './search.routes.js';
 import snippetsRoutes from './snippets.routes.js';
 import scratchRoutes from './scratch.routes.js';
+import viewsRoutes from './views.routes.js';
 import deliveriesRoutes from './deliveries.routes.js';
 import rendersRoutes from './renders.routes.js';
 import backupRoutes from './backup.routes.js';
@@ -167,6 +168,8 @@ router.use('/snippets', snippetsRoutes);
 router.use('/assistant', assistantRoutes);
 /* One person's own notes, which belong to no engagement. */
 router.use('/scratch', scratchRoutes);
+/* And their own way back to the lists they work from. Private, and no access implied. */
+router.use('/views', viewsRoutes);
 // The register: the delivery record read across every engagement rather than within one.
 router.use('/deliveries', deliveriesRoutes);
 /*

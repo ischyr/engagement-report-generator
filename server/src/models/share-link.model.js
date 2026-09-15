@@ -25,7 +25,22 @@ import mongoose from 'mongoose';
  */
 const shareLinkSchema = new mongoose.Schema(
   {
-    audit: { type: mongoose.Schema.Types.ObjectId, ref: 'Audit', required: true, index: true },
+    /**
+     * The engagement this is about — for every kind but `client`.
+     *
+     * No longer `required`, which is the one thing in this model worth being nervous about: a
+     * scope that is empty is a scope that is everything, and the check that stops that is a
+     * validator rather than a schema flag now. See below.
+     */
+    audit: { type: mongoose.Schema.Types.ObjectId, ref: 'Audit', default: null, index: true },
+
+    /**
+     * Or the client, for the one kind that spans their engagements rather than naming one.
+     *
+     * Exactly one of these two is set, and which is decided by `kind`. A row with both, or with
+     * neither, is refused below rather than being allowed to mean something nobody intended.
+     */
+    company: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null, index: true },
     /** SHA-256 of the token that went out. Never the token itself. */
     tokenHash: { type: String, required: true, unique: true, index: true },
 
@@ -46,7 +61,7 @@ const shareLinkSchema = new mongoose.Schema(
      * stands exactly as written. Two kinds rather than a flag, because what may be seen is decided
      * per kind in `share.service.js` and a boolean would invite a third meaning later.
      */
-    kind: { type: String, enum: ['findings', 'status'], default: 'findings', index: true },
+    kind: { type: String, enum: ['findings', 'status', 'client'], default: 'findings', index: true },
 
     /**
      * Whether the client may change anything, or only read.
@@ -81,10 +96,88 @@ const shareLinkSchema = new mongoose.Schema(
      * information, not ours, and a log of it would be a thing we would then have to protect.
      */
     views: { type: Number, default: 0 },
+
+    /**
+     * Whether to chase, and how often.
+     *
+     * Off unless somebody asks for it, per link, at the moment it is made — which is the same
+     * shape as every other permission here and for a stronger reason: this is the only thing in
+     * the application that sends unprompted mail to somebody outside the firm. A default of "on"
+     * would make an instance start mailing clients because it was upgraded.
+     *
+     * It stops on its own, and every one of these is a stop rather than a pause:
+     *
+     *   - nothing is outstanding — everything has been claimed fixed
+     *   - the link has expired or been withdrawn
+     *   - the report has been signed off, so there is nothing the client could do anyway
+     *   - `REMINDER_LIMIT` have been sent
+     *
+     * The last one is the one that needs a number rather than a principle. A fortnightly chase on
+     * a six-month link is thirteen emails, which is not a reminder, it is a campaign — and the
+     * client who ignores the fifth was never going to answer the ninth. After the cap the team
+     * has to do what the app cannot: pick up the telephone.
+     */
+    reminder: {
+      /** Days between chases. Zero is off, and is the default. */
+      everyDays: { type: Number, default: 0, min: 0, max: 90 },
+      /** When the last one went, which is what makes the sweep idempotent. */
+      lastAt: { type: Date, default: null },
+      /** How many have gone, against the cap. */
+      sent: { type: Number, default: 0 },
+    },
+
+    /**
+     * Who this link was sent to, and when.
+     *
+     * Recorded because "did they get it" was previously answerable only by asking the person who
+     * pasted it into their own mail — and because a reminder has to know where to go. `client`
+     * is set when the address came from the contact list and left null when somebody typed one,
+     * so the record is honest about which it was rather than inventing a relationship.
+     *
+     * The token is *not* here and cannot be. Only its hash is kept, and it is returned exactly
+     * once at creation — so a link can be sent at the moment it is made and never afterwards.
+     * Resending means issuing a new one, which is the same answer this model has always given to
+     * somebody who lost their link, and a better one than a token this app could hand out twice.
+     */
+    sentTo: {
+      type: [
+        new mongoose.Schema(
+          {
+            name: { type: String, default: '', trim: true, maxlength: 160 },
+            email: { type: String, required: true, trim: true, lowercase: true, maxlength: 200 },
+            client: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', default: null },
+            at: { type: Date, default: Date.now },
+            by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     lastViewedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
+
+/**
+ * Exactly one scope, and the right one for the kind.
+ *
+ * A validator rather than `required` on each field, because the rule is about the pair: a
+ * `client` link names a company and no engagement, everything else names an engagement and no
+ * company. Both set would be a link whose reach depends on which code path reads it first, and
+ * neither set would be a token scoped to nothing — which, for something that decides what an
+ * outsider may see, is the same as scoped to everything.
+ */
+shareLinkSchema.pre('validate', function assertOneScope(next) {
+  const wantsCompany = this.kind === 'client';
+  if (wantsCompany && (!this.company || this.audit)) {
+    return next(new Error('A client link belongs to a company and to no single engagement'));
+  }
+  if (!wantsCompany && (!this.audit || this.company)) {
+    return next(new Error('This link belongs to one engagement'));
+  }
+  return next();
+});
 
 export const ShareLink = mongoose.model('ShareLink', shareLinkSchema);
 export default ShareLink;

@@ -117,6 +117,71 @@ console.log('\nWhat a browser downloads before it can show a password box:');
         `what opening an engagement no longer costs)`
     );
   }
+
+  /*
+   * The same argument again, one level down: the engagement page and its twenty-one tabs.
+   *
+   * The page imported every tab statically, so opening a job to read its overview downloaded the
+   * phishing campaign, the kit register, the detection log and the signature pad — a 356 kB chunk
+   * to draw a tab bar with one tab showing. They are `lazy()` now, and the page is 45 kB.
+   *
+   * Which is a property of the import statements, not of the build, so it is the shape of the
+   * built output that gets checked — but not the way the editor above is checked. A static import
+   * of the editor leaves `from"./RichTextEditor-hash.js"` behind because something else still
+   * imports it dynamically, so the chunk survives and can be named. A tab has only the one
+   * importer, so making it static leaves no chunk at all: rollup folds it into the page and there
+   * is no string to look for. Reinstating exactly that — `FindingsTab` back to a plain import —
+   * passed a `from"./"` check cheerfully while the page went from 14.7 kB to 41.9 kB.
+   *
+   * So the question asked here is whether each tab the page lazies still exists as a chunk. The
+   * list is read off the page rather than counted, so removing a tab needs no edit here, and a
+   * tab folded back into the page is named.
+   *
+   * The runtime half is `npm run test:engagement-tabs`, which opens all twenty-one: a dynamic
+   * import that cannot resolve is a blank tab in production rather than a build failure.
+   */
+  const page = chunks.find((name) => /^EngagementEditorPage-/.test(name));
+  check('the engagement page is a chunk of its own', Boolean(page), 'no page chunk found');
+
+  const wanted = [
+    ...fs
+      .readFileSync(path.join(ROOT, 'src/pages/EngagementEditorPage.jsx'), 'utf8')
+      .matchAll(/lazy\(\(\) => import\('\.\.\/components\/engagement\/(\w+)\.jsx'\)\)/g),
+  ].map((match) => match[1]);
+  check(`the page lazies ${wanted.length} tabs`, wanted.length >= 20, `${wanted.length} found`);
+
+  if (page && wanted.length) {
+    const merged = wanted.filter((name) => !chunks.some((chunk) => chunk.startsWith(`${name}-`)));
+    check(
+      'and every one of them is a chunk of its own',
+      merged.length === 0,
+      `folded into the page: ${merged.join(', ')} — a static import somewhere`
+    );
+
+    const source = fs.readFileSync(path.join(DIST, 'assets', page), 'utf8');
+    const asked = wanted.filter((name) =>
+      chunks.some((chunk) => chunk.startsWith(`${name}-`) && source.includes(`import("./${chunk}")`))
+    );
+    check(
+      `the page asks for ${asked.length} of them dynamically`,
+      asked.length === wanted.length,
+      `${asked.length} of ${wanted.length} — the rest reach the page some other way`
+    );
+
+    /*
+     * And a ceiling on what is left, because the tabs are not the only way to make this page
+     * heavy. 14.7 kB gzipped at the time of writing, down from a chunk that was 356 kB unzipped.
+     */
+    const PAGE_BUDGET_GZIP = 35 * 1024;
+    const gz = gzipSync(fs.readFileSync(path.join(DIST, 'assets', page)), { level: 9 }).length;
+    check(
+      `opening an engagement costs ${(gz / 1024).toFixed(1)} kB gzipped, under the ${(
+        PAGE_BUDGET_GZIP / 1024
+      ).toFixed(0)} kB budget`,
+      gz <= PAGE_BUDGET_GZIP,
+      `${(gz / 1024).toFixed(1)} kB — something a tab owns has moved onto the page itself`
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ browser --- */

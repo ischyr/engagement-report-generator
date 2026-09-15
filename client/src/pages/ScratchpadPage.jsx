@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { NotebookPen, Pin, PinOff, Plus, Save, Send, Trash2 } from 'lucide-react';
 
 import { api } from '../lib/api.js';
+import { optimistically, replacing } from '../lib/optimistic.js';
 import { offerUndo } from '../lib/undo.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
@@ -17,7 +18,7 @@ import { Modal } from '../components/ui/Modal.jsx';
 import { EmptyState, LoadingBlock } from '../components/ui/Feedback.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
 import { RichTextEditor } from '../components/editor/LazyRichTextEditor.jsx';
-import { useUrlState } from '../hooks/useUrlState.js';
+import { useUrlSearch } from '../hooks/useUrlState.js';
 
 /**
  * Your own notes, belonging to no engagement.
@@ -37,14 +38,16 @@ import { useUrlState } from '../hooks/useUrlState.js';
  */
 export default function ScratchpadPage() {
   const toast = useToast();
-  const { data, loading, reload } = useResource('/scratch', { initial: { notes: [] } });
+  const { data, loading, reload, setData } = useResource('/scratch', {
+    initial: { notes: [] },
+  });
   const engagements = useResource('/audits', { initial: [] });
 
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState({ title: '', content: '', tags: [] });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [query, setQuery] = useUrlState('q', '');
+  const [typing, setQuery, query] = useUrlSearch('q', '');
   const [moving, setMoving] = useState(false);
 
   const notes = data?.notes ?? [];
@@ -111,8 +114,14 @@ export default function ScratchpadPage() {
 
   const togglePin = async (note) => {
     try {
-      await api.put(`/scratch/${note._id}`, { pinned: !note.pinned });
-      await reload({ quiet: true });
+      await optimistically({
+        from: data,
+        /* The notes are a field of the answer here, not the answer, so the wrapper is kept. */
+        to: { ...data, notes: replacing(data?.notes, note._id, { pinned: !note.pinned }) },
+        setData,
+        request: () => api.put(`/scratch/${note._id}`, { pinned: !note.pinned }),
+        reload,
+      });
     } catch (error) {
       toast.fromError(error);
     }
@@ -167,7 +176,7 @@ export default function ScratchpadPage() {
           <CardBody className="border-b border-line-soft">
             <Input
               placeholder="Search everything"
-              value={query}
+              value={typing}
               onChange={(event) => setQuery(event.target.value)}
             />
           </CardBody>

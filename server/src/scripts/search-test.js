@@ -28,6 +28,7 @@
  * having.
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 
 import mongoose from 'mongoose';
@@ -104,7 +105,9 @@ async function oracle(needle, user) {
   const found = new Set();
 
   const audits = await Audit.find(visibleAuditFilter(user))
-    .select('name reference auditType findings sections notes company classification updatedAt')
+    .select(
+      'name reference auditType findings sections notes enumeration company classification updatedAt'
+    )
     .populate({ path: 'company', select: 'name' });
 
   for (const audit of audits) {
@@ -135,6 +138,25 @@ async function oracle(needle, user) {
         found.add(`note:${note._id}`);
       }
     }
+    /*
+     * The steps, which the search did not read at all until it did — so for these there is no
+     * "what the old code returned" to compare against. The oracle is the same thing it is for
+     * every other kind: the scoring loop's own field list, written out here rather than imported,
+     * so a field dropped from one side is a failure rather than a silent agreement to stop
+     * looking. `output` and `content` are not in it; they are in `EnumerationBody`, and
+     * `/search/output` is their door.
+     */
+    for (const step of audit.enumeration ?? []) {
+      const fields = [
+        step.title,
+        step.tool,
+        step.target,
+        step.command,
+        step.summary,
+        step.outputPreview,
+      ];
+      if (fields.some((value) => hits(value, regex))) found.add(`step:${step._id}`);
+    }
   }
   return found;
 }
@@ -143,7 +165,9 @@ async function oracle(needle, user) {
 const asIds = (body) =>
   new Set(
     (body?.results ?? [])
-      .filter((result) => ['engagement', 'finding', 'section', 'note'].includes(result.type))
+      .filter((result) =>
+        ['engagement', 'finding', 'section', 'note', 'step'].includes(result.type)
+      )
       .map((result) => `${result.type}:${result.id}`)
   );
 
@@ -301,6 +325,13 @@ try {
     'engagement.reference': 'muneedle',
     'engagement.auditType': 'nuneedle',
     'company.name': 'xineedle',
+    /* The workbench. Six fields, one needle each, so a field that stops being read names itself. */
+    'step.title': 'omeganeedle',
+    'step.tool': 'sigmaneedle',
+    'step.target': 'tauneedle',
+    'step.command': 'upsilonneedle',
+    'step.summary': 'phineedle',
+    'step.outputPreview': 'chineedle',
   };
 
   const VECTOR = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N';
@@ -346,6 +377,26 @@ try {
         content: `<p>Reading ${FIELDS['note.content']}.</p>`,
         author: lead._id,
       },
+    ],
+    enumeration: [
+      {
+        title: `A step called ${FIELDS['step.title']}`,
+        tool: `httpx ${FIELDS['step.tool']}`,
+        target: `${FIELDS['step.target']}.example`,
+        command: `httpx -l hosts.txt -o ${FIELDS['step.command']}.json`,
+        summary: `Which found ${FIELDS['step.summary']}.`,
+        outputPreview: `banner: ${FIELDS['step.outputPreview']}`,
+        order: 0,
+      },
+      /*
+       * The same needle in a target and in a command, on two steps, so the weighting can be
+       * asserted rather than assumed. The host is what somebody types into the box; the
+       * invocation that mentions it is the second-best row, not the first.
+       */
+      { title: 'Swept the range', target: 'rankedneedle.example', order: 1 },
+      { title: 'Ran it again', command: 'nmap -p- rankedneedle.example', order: 2 },
+      /* And one held back from the report, which is still the team's own record. */
+      { title: 'Borrowed an account, psineedle', internal: true, order: 3 },
     ],
   });
 
@@ -462,6 +513,59 @@ try {
       `${field} (${needle})`,
       expected.size > 0 && difference(expected, actual).length === 0,
       expected.size === 0 ? 'the fixture matches nothing' : `missing ${difference(expected, actual).join(', ')}`
+    );
+  }
+
+  /* ------------------------------------------------------------------------ */
+  console.log('\nA step of the operation is a thing the search can find:');
+  {
+    const { body } = await search(FIELDS['step.target'], session);
+    const step = (body.results ?? []).find((result) => result.type === 'step');
+    check('a target is found', Boolean(step), JSON.stringify(body.byType));
+    check('  and the row names the field it matched', step?.matched === 'target', step?.matched);
+    check(
+      '  and links to the step, not just to the tab',
+      String(step?.href ?? '').includes('?tab=enumeration&step='),
+      step?.href
+    );
+    check(
+      '  and carries the tool and the target, which is how a step is recognised',
+      step?.tool?.includes(FIELDS['step.tool']) && step?.target?.includes(FIELDS['step.target']),
+      `${step?.tool} / ${step?.target}`
+    );
+
+    /*
+     * The weighting, which is the only judgement in any of this. A needle in a host outranks the
+     * same needle in the command that was pointed at the host — both are true, one is the answer.
+     */
+    const ranked = await search('rankedneedle', session);
+    const steps = (ranked.body.results ?? []).filter((result) => result.type === 'step');
+    check('both ways of mentioning a host are found', steps.length === 2, String(steps.length));
+    check(
+      '  and the target outranks the command',
+      steps[0]?.matched === 'target' && steps[1]?.matched === 'command',
+      steps.map((entry) => entry.matched).join(' then ')
+    );
+
+    /* A step kept out of the report is still findable, and the row says which it is. */
+    const held = await search('psineedle', session);
+    const hidden = (held.body.results ?? []).find((result) => result.type === 'step');
+    check('a step held back from the report is still findable', Boolean(hidden), 'not found');
+    check('  and the row says so', hidden?.internal === true, String(hidden?.internal));
+
+    /*
+     * And the bodies stay where they are. `/search/output` reads them; this endpoint must not
+     * have quietly started loading 200 kB a step to answer a half-typed query.
+     */
+    const source = fs.readFileSync(
+      new URL('../routes/search.routes.js', import.meta.url),
+      'utf8'
+    );
+    const main = source.slice(source.indexOf("router.get(\n  '/',"));
+    check(
+      'and the main search still never opens an output body',
+      !main.includes('EnumerationBody'),
+      'the main search reads EnumerationBody'
     );
   }
 

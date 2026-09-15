@@ -14,6 +14,7 @@ import {
 import { useAuth } from '../context/AuthContext.jsx';
 import { useResource } from '../hooks/useResource.js';
 import ClientTimeline from '../components/clients/ClientTimeline.jsx';
+import ClientShareCard from '../components/clients/ClientShareCard.jsx';
 import { formatDate, timeAgo } from '../lib/utils.js';
 
 import { TrendingUp } from 'lucide-react';
@@ -183,6 +184,13 @@ export default function ClientPage() {
           </CardBody>
         </Card>
       ) : null}
+
+      {/*
+        A link the client can open, showing what has been done for them. Here rather than on an
+        engagement because it is not about one — and a control with this reach belongs somewhere
+        somebody has gone on purpose.
+      */}
+      <ClientShareCard companyId={company._id} companyName={company.name} />
 
       {/* What this client keeps being told. The most useful thing on the page for
           writing next year's report, and previously impossible to see at all. */}

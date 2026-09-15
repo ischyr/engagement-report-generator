@@ -57,6 +57,18 @@ export function refreshCookieOptions() {
   };
 }
 
+/**
+ * The same cookie, addressed for deletion.
+ *
+ * Name, path, domain and flags have to match or the browser keeps the original — but the lifetime
+ * must not come along. `res.clearCookie` sets `expires` to the epoch and then merges the options
+ * over the top, so a `maxAge` in them wins: every sign-out was emitting
+ * `engy_refresh=; Max-Age=604800`, which empties the value and keeps the cookie for another week
+ * rather than removing it. Express 5 ignores `maxAge` here, so this is also what stops the
+ * behaviour changing under the next upgrade.
+ */
+export const clearing = ({ maxAge, ...rest }) => rest;
+
 export function signMediaToken(user, sid) {
   return jwt.sign(
     { sub: user._id.toString(), version: user.tokenVersion, scope: 'media', ...(sid ? { sid } : {}) },
