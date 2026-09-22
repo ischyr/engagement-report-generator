@@ -24,7 +24,9 @@ import { activityCalendar } from '../services/activity-calendar.service.js';
 const router = Router();
 
 const SEVERITIES = ['Critical', 'High', 'Medium', 'Low', 'None'];
-const STATUSES = ['open', 'retesting', 'fixed'];
+const STATUSES = ['open', 'retesting', 'fixed', 'accepted'];
+/* Still somebody's to do — see `findings.routes.js`, which draws the same distinction. */
+const OUTSTANDING = (status) => status !== 'fixed' && status !== 'accepted';
 
 const emptySeverityCounts = () => ({ Critical: 0, High: 0, Medium: 0, Low: 0, None: 0 });
 
@@ -158,7 +160,7 @@ router.get(
         byStatus[status] += 1;
         auditFindings += 1;
         auditSeverities[key] += 1;
-        if (status !== 'fixed') {
+        if (OUTSTANDING(status)) {
           auditOpen += 1;
           openBySeverity[key] += 1;
         }
@@ -172,7 +174,7 @@ router.get(
 
         if (!earliest || new Date(created) < earliest) earliest = new Date(created);
 
-        if (status !== 'fixed') {
+        if (OUTSTANDING(status)) {
           const ageDays = Math.floor((Date.now() - new Date(created).getTime()) / 86_400_000);
           if (ageDays > oldestOpen[key]) oldestOpen[key] = ageDays;
         }

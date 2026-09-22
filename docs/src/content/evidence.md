@@ -67,14 +67,28 @@ be dropped into a finding without leaving the page.
 
 ## Annotating and redacting
 
-![The annotator open on a screenshot, with Box, Arrow and Redact in its toolbar, an Undo beside them, and a line underneath explaining that redaction is drawn into the bitmap before the file is written.](/shots/evidence.jpg "Boxes and arrows point at something. Redaction removes it, and saves a new image rather than changing the one you captured.")
+![The annotator open on a screenshot, with Box, Arrow, Step, Label, Blur and Redact in its toolbar, an Undo beside them, and a line underneath explaining that redaction is drawn into the bitmap before the file is written.](/shots/evidence.jpg "Boxes and arrows point at something. Redaction removes it, and saves a new image rather than changing the one you captured.")
 
-Open an image and you get a small editor: crop, arrows, boxes, and **redaction**.
+Six tools, and the difference between two of them matters:
+
+- **Box** and **arrow** point at things.
+- **Step** drops a numbered marker — ①②③ — which is what makes a three-screenshot proof of concept
+  readable without a paragraph explaining what order to look at things in. They number themselves
+  in the order you place them, and renumber if you undo one.
+- **Label** puts a few words on the image itself, on a filled plate so they are legible wherever
+  they land.
+- **Redact** fills with black. The pixels are gone before the file is written.
+- **Blur** averages the region into blocks.
 
 > [!warning]
-> Redaction burns the pixels out of the image. It is not a black rectangle drawn on top, because a
-> rectangle drawn on top can be moved, and reports do get taken apart. What is redacted is gone
-> from the stored file.
+> **Blur is not redaction.** It is irreversible — block averaging destroys the information rather
+> than spreading it, unlike a gaussian blur, which published tools can undo. But it keeps the
+> *shape*, which is the point: use it for something that should stay recognisable as *a* customer
+> name without being readable as *this* one. For a password, a token or a real address, redact.
+
+The original is never touched. Saving produces a new image, because stored screenshots are
+deduplicated by hash and shared across engagements — editing the bytes in place would alter another
+client's report from inside this one.
 
 ## Replacing one everywhere
 
@@ -89,6 +103,55 @@ text column of *your* template — an A4 page with 2.5 cm margins is a 9070-twip
 Letter default. A caption uses your template's caption style if it has one.
 
 Optional borders and their colour are under **Settings → Report formatting**.
+
+### How wide it prints
+
+Select a screenshot and the bar above the editor offers **Auto**, **Full**, **½** and **⅓**.
+
+*Auto* is the default and is what every screenshot has always done: the size it was captured at,
+shrunk if that does not fit the column. It is right about half the time, and wrong in two ways. A
+320-pixel error dialog prints as a 320-pixel stamp adrift on the page; a wide terminal capture is
+squeezed into the column and is unreadable at any size. The others are for those: *Full* is the
+width of the text column, and it is the only thing that will make a picture **larger** than it was
+captured — which costs resolution, so it is asked for rather than assumed.
+
+### Two of them side by side
+
+Insert a two-column table and put a screenshot in each cell. A picture is measured against the
+column it is in, and inside a table that column is the cell — so each comes out the size of its
+half, with the shape kept.
+
+That is new. Until now everything nested in a cell was laid out against the width of the whole
+page, so a screenshot pasted into half a table was drawn at full width and spilled out of the cell
+it was in. Code panes and nested tables were measured the same wrong way and are fixed with it.
+
+## Who can read it
+
+Evidence is readable only by people on an engagement that contains it — creator, collaborator or
+reviewer, with membership that has not run out, and two-factor authentication where the engagement
+is marked restricted. That applies to the bytes themselves, to the evidence bin, and to captioning
+or deleting a capture.
+
+> [!warning]
+> **If you are upgrading, run `npm run backfill:media-owners` once.**
+>
+> Screenshots are deduplicated by content, so the same picture uploaded to two engagements has
+> always been one stored object — recorded against whichever engagement uploaded it *first*.
+> Without the backfill, the second engagement's team would be refused a picture that is in their
+> own report. The script reads the owners from the engagements themselves and only ever adds; it
+> is safe to run more than once.
+
+One object can belong to several engagements, and membership of any one of them is enough. That is
+sound rather than a compromise: if two engagements both contain the same bytes, somebody on either
+already has them, and reading them through the other reveals nothing new.
+
+Pictures with no engagement on them — a logo, a signature, a generated chart — stay readable to any
+signed-in account. They are not client evidence, and refusing them would break the branding on
+every page to close nothing.
+
+Uploading a file that already exists elsewhere no longer tells you so. The *"already here"* answer
+is given only when the bytes are already in **your** engagement, because across engagements it was
+a way to ask whether the instance held a given file somewhere you cannot see.
 
 ## Storage and tidying up
 
@@ -195,3 +258,23 @@ sentence that reads as though nothing is missing.
 
 Under **Settings → Report** you can switch numbering off, and change what a figure is called —
 "Screenshot", "Fig.", or the word your house style uses.
+
+### A list of them at the front
+
+A forty-page report with eleven screenshots numbers them, and until now offered no way to look one
+up. A reader told *"as shown in Figure 7"* had to page through the document; a reader who remembered
+a screenshot but not which finding it was in had no way back to it at all.
+
+Put `{{@rich.listOfFigures}}` in your template, with your own heading above it, and the front matter
+gets one line per figure in the order the finished document meets them — each one a link to the
+caption it names. `{{@rich.listOfTables}}` is the same for [named tables](/settings).
+
+Both are real `TOC` fields, like the table of contents: the client's own edits rebuild them, and
+Word adds the page numbers on the refresh the document asks for when it opens. They also carry a
+readable copy of the list *inside* the field, which is what anything that does not evaluate fields
+sees — LibreOffice in some configurations, a PDF printed by a converter. A field alone would show
+those readers *"Right-click to update field"* on the second page of the report; a static list alone
+would go stale the first time anybody edited it.
+
+A report with no figures prints nothing rather than an empty heading, so a template can carry the
+tag unconditionally and a proposal with no evidence in it is unaffected.

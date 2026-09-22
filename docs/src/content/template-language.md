@@ -155,6 +155,47 @@ Findings at a Glance
 Both shipped starters print the ring under *Findings at a Glance*. Delete the placeholder if you
 would rather have the table on its own.
 
+## More than the severity ring
+
+Three tags beyond the two above, for the questions a reader asks after the severity breakdown:
+
+```text
+{{@rich.remediationChart}}   fixed / retesting / open, as a ring in the status colours
+{{@rich.findingsByCategory}} the weakness classes, ranked, longest bar first
+{{@rich.findingsByType}}     the same for weakness type
+```
+
+The remediation ring is what a retest report is actually about: the severity breakdown says what
+was found, this says what has been done about it.
+
+The ranked two are **tables, not pictures** — every label and every count is real text in your
+template's own typeface, and only the bars are drawn. That is deliberate: a chart with the labels
+rendered into it is an image of a table, unsearchable and wrong at any other zoom. They are ranked
+rather than drawn as a ring because a category list has a long tail, and twelve wedges is twelve
+wedges nobody can tell apart. Capped at twelve rows.
+
+All three print nothing when there is nothing to draw, so guard the heading above them if it should
+go too.
+
+## Lists of figures and tables
+
+Two more raw tags, for the front matter:
+
+```text
+{{@rich.listOfFigures}}   one line per figure, in the order the document meets them
+{{@rich.listOfTables}}    the same for the tables you have named
+```
+
+Write your own heading above each — *"List of figures"* is a house style decision and there is no
+setting for it. Each entry links to the caption it names.
+
+Both are real `TOC` fields, so the client's own edits rebuild them and Word fills in the page
+numbers when the document opens. Each also carries a readable copy of the list inside the field,
+for readers that do not evaluate fields at all.
+
+A report with no figures prints nothing rather than an empty list, so the tag is safe to leave in a
+template a proposal also uses.
+
 ## What is available
 
 The full vocabulary is in the app under **Templates → Tag reference**, grouped and searchable, and

@@ -6,10 +6,18 @@ import Underline from '@tiptap/extension-underline';
 import Link from '@tiptap/extension-link';
 import { FigureImage } from './FigureImage.js';
 import { FigureRef } from './FigureRef.js';
+import { FindingRef } from './FindingRef.js';
+import { Callout, PageBreak, Footnote } from './ReportBlocks.js';
+import FindingRefPicker from './FindingRefPicker.jsx';
 import FigureRefPicker from './FigureRefPicker.jsx';
 import ScopeHostPicker from './ScopeHostPicker.jsx';
+import MarkLinePicker from './MarkLinePicker.jsx';
 import { CodeBlockWithClass, ParagraphWithClass } from './KeepClass.js';
+import { addTableCaption, removeTableCaption, tableAround } from './TableCaption.js';
 import Lightbox from '../ui/Lightbox.jsx';
+import { Modal } from '../ui/Modal.jsx';
+import { Button } from '../ui/Button.jsx';
+import { Textarea } from '../ui/Field.jsx';
 import SnippetPicker from './SnippetPicker.jsx';
 import { referenceableFigures } from '../../lib/figures.js';
 import { hostsFromScope } from '../../lib/scope-hosts.js';
@@ -26,7 +34,7 @@ import TableRow from '@tiptap/extension-table-row';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
 
-import { AlignCenter, AlignLeft, AlignRight, ArrowLeftRight, Bold, BookmarkPlus, Code, Code2, Heading2, Heading3, Highlighter, Image as ImageIcon, ImagePlus, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, RefreshCw, ServerCog, Strikethrough, Table as TableIcon, Trash2, Underline as UnderlineIcon, Undo2 } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, ArrowLeftRight, Bold, BookmarkPlus, Code, Code2, Crosshair, Heading2, Heading3, Highlighter, Image as ImageIcon, ImagePlus, Info, Italic, Link2, Link2Off, List, ListOrdered, Minus, Quote, Redo2, RefreshCw, SeparatorHorizontal, ServerCog, ShieldAlert, Strikethrough, Superscript, Table as TableIcon, Trash2, Underline as UnderlineIcon, Undo2 } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
 import { ignoredNote, pickEvidence, shrinkImage } from '../../lib/images.js';
@@ -93,6 +101,32 @@ const Divider = () => <span className="mx-0.5 h-5 w-px shrink-0 bg-line" />;
 /** A stored image, as opposed to one pasted in as a data URI. */
 const MEDIA_SRC = /\/api\/media\/([0-9a-f]{24})/i;
 
+/**
+ * The code block the cursor is inside, or null.
+ *
+ * Walks out from the selection rather than asking `editor.isActive`, because the button needs the
+ * node itself: what is marked already, and the text to list. A pane nested in a callout or in a
+ * list item is found the same way as one at the top level.
+ */
+function activeCodeBlock(instance) {
+  const { $from } = instance.state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (node.type.name === 'codeBlock') return node;
+  }
+  return null;
+}
+
+/** `"4,7"` as a set of numbers — the grammar `data-mark-lines` is read with on the server. */
+function markedSetOf(value) {
+  const out = new Set();
+  for (const part of String(value ?? '').split(',')) {
+    const n = Number(part.trim());
+    if (Number.isInteger(n) && n > 0) out.add(n);
+  }
+  return out;
+}
+
 export function RichTextEditor({
   value,
   onChange,
@@ -127,6 +161,22 @@ export function RichTextEditor({
    * engagement behind it — a template, a library entry, a snippet.
    */
   scopeHosts = null,
+  /**
+   * The engagement's other findings, so a sentence here can point at one of them.
+   *
+   * Passed in for the same reason `siblingFields` is: this editor holds one field and knows
+   * nothing about the engagement around it. Absent means the command is not offered, which is
+   * right for a template, a library entry or a snippet — none of which has findings to refer to.
+   */
+  findings = null,
+  /**
+   * Which of those findings is the one being edited, so it is not offered as a thing to refer to.
+   *
+   * Its own prop rather than read off `siblingFields`, which carries the five prose fields and no
+   * identity. A reference from a finding to itself is only ever a mistake, and offering it invites
+   * the mistake.
+   */
+  excludeFinding = null,
   /**
    * A live shared document for this field, or null for the way it has always worked.
    *
@@ -177,6 +227,8 @@ export function RichTextEditor({
         heading: { levels: [2, 3, 4] },
         paragraph: false,
         codeBlock: false,
+        /* Replaced by `PageBreak`, which is the same node with one attribute on it. */
+        horizontalRule: false,
         /*
          * The kit's undo is turned off while a document is shared, and only then.
          *
@@ -197,6 +249,10 @@ export function RichTextEditor({
       }),
       FigureImage.configure({ inline: false, allowBase64: true }),
       FigureRef,
+      FindingRef,
+      Callout,
+      PageBreak,
+      Footnote,
       Highlight.configure({ multicolor: false }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Table.configure({ resizable: true }),
@@ -582,7 +638,24 @@ export function RichTextEditor({
   /** Reusable text: the picker, and whatever is selected when it opens. */
   const [snippets, setSnippets] = useState(false);
   const [figureRefs, setFigureRefs] = useState(false);
+  const [findingRefs, setFindingRefs] = useState(false);
+  const [footnoteDraft, setFootnoteDraft] = useState(null);
   const [scopePicker, setScopePicker] = useState(false);
+  const [markLines, setMarkLines] = useState(false);
+
+  /*
+   * The pane the cursor is in, and which of its lines have been pointed at.
+   *
+   * Read off the editor on every render rather than held in state, because the pane *is* the
+   * document: typing a line into it renumbers everything below, and a copy kept beside it would be
+   * marking line 4 of a pane that has since become five lines longer.
+   */
+  const codeBlock = editor ? activeCodeBlock(editor) : null;
+  const markableLines = codeBlock ? codeBlock.textContent.split('\n') : [];
+  const markedLineNumbers = useMemo(
+    () => markedSetOf(codeBlock?.attrs?.markLines),
+    [codeBlock?.attrs?.markLines]
+  );
 
   /**
    * What `/` offers.
@@ -653,6 +726,43 @@ export function RichTextEditor({
         icon: Quote,
         keywords: ['figure', 'screenshot', 'reference', 'cross-reference', 'evidence'],
         run: () => setFigureRefs(true),
+      },
+      /* Only when there are findings to point at — see the scope command below for the argument. */
+      ...((findings ?? []).length > 1
+        ? [
+            {
+              id: 'findingref',
+              label: 'Refer to another finding',
+              hint: 'Prints the identifier, and survives renumbering',
+              icon: ShieldAlert,
+              keywords: ['finding', 'vuln', 'reference', 'cross-reference', 'see also'],
+              run: () => setFindingRefs(true),
+            },
+          ]
+        : []),
+      {
+        id: 'callout',
+        label: 'Callout box',
+        hint: 'A note, a warning — drawn as a shaded box in the report',
+        icon: Info,
+        keywords: ['note', 'warning', 'danger', 'tip', 'admonition', 'box'],
+        run: (instance) => instance.chain().focus().setCallout('note').run(),
+      },
+      {
+        id: 'footnote',
+        label: 'Footnote',
+        hint: 'A superscript mark here, the words at the foot of the page',
+        icon: Superscript,
+        keywords: ['note', 'aside', 'caveat', 'reference'],
+        run: () => setFootnoteDraft(''),
+      },
+      {
+        id: 'pagebreak',
+        label: 'Page break',
+        hint: 'What follows starts on a fresh page',
+        icon: SeparatorHorizontal,
+        keywords: ['page', 'break', 'new page', 'split'],
+        run: (instance) => instance.chain().focus().setPageBreak().run(),
       },
       /*
        * Only when there is a scope to pick from. A command that opens a dialog saying "there is
@@ -733,6 +843,14 @@ export function RichTextEditor({
   }
 
   const inTable = editor.isActive('table');
+  /*
+   * Read on every render rather than kept in state.
+   *
+   * The toolbar already re-renders on every selection and document change — that is how the bold
+   * button knows it is active — so this is the same question asked the same way, and a piece of
+   * state mirroring the document is a piece of state that can disagree with it.
+   */
+  const hasTableCaption = inTable && tableAround(editor.state)?.captionPos !== null;
 
   return (
     <div
@@ -836,6 +954,20 @@ export function RichTextEditor({
             onClick={() => editor.chain().focus().toggleCodeBlock().run()}
           />
           {/*
+            * Only inside a pane, because outside one it has nothing to point at. Hidden rather
+            * than disabled: a toolbar of greyed-out buttons is how a toolbar becomes unreadable,
+            * and this one is meaningless in every other context.
+            */}
+          {editor.isActive('codeBlock') ? (
+            <ToolbarButton
+              title="Highlight a line"
+              icon={Crosshair}
+              active={Boolean(activeCodeBlock(editor)?.attrs?.markLines)}
+              onClick={() => setMarkLines(true)}
+            />
+          ) : null}
+
+          {/*
             * For when the paste heuristic does not fire: select what was pasted and press this to
             * label and format it, or press it with nothing selected to write a pair out by hand.
             */}
@@ -936,6 +1068,33 @@ export function RichTextEditor({
               >
                 +Col
               </button>
+              {/*
+                A caption, which is what makes a table referable in the deliverable: with one it
+                prints as "Table 3 — Hosts in scope" and is numbered on Word's own counter; without
+                one it stays an unnamed grid, which is right for the two-row comparison inside a
+                sentence. The button toggles, because the second press is usually somebody who
+                added one by accident.
+              */}
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const { state, view } = editor;
+                  const has = tableAround(state)?.captionPos !== null;
+                  (has ? removeTableCaption : addTableCaption)(state, view.dispatch);
+                  view.focus();
+                }}
+                aria-pressed={hasTableCaption}
+                className={cn(
+                  'rounded-md px-1.5 py-1 text-[0.6875rem] font-medium transition',
+                  hasTableCaption
+                    ? 'bg-brand-500/15 text-brand-200'
+                    : 'text-fg-muted hover:bg-white/8 hover:text-fg'
+                )}
+                title={hasTableCaption ? 'Remove the caption' : 'Name this table, so the report can number it'}
+              >
+                Caption
+              </button>
               <ToolbarButton
                 title="Delete table"
                 icon={Trash2}
@@ -1021,6 +1180,40 @@ export function RichTextEditor({
             }
             className="min-w-0 flex-1 bg-transparent text-xs text-fg placeholder:text-fg-subtle focus:outline-none"
           />
+          {/*
+            How wide it prints. "Auto" is the size it was captured at, which is what every
+            screenshot in every existing report already uses, so it stays the default — the
+            others are for the two cases it gets wrong: a small dialog lost on the page, and a
+            wide capture that is only readable given the whole column.
+          */}
+          <span className="flex shrink-0 overflow-hidden rounded border border-line-soft">
+            {[
+              [null, 'Auto', 'The size it was captured at'],
+              ['100', 'Full', 'The full width of the text column'],
+              ['50', '½', 'Half the column — two of these in a two-column table sit side by side'],
+              ['33', '⅓', 'A third of the column'],
+            ].map(([value, label, hint]) => {
+              const current = editor.getAttributes('image').printWidth ?? null;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  title={hint}
+                  onClick={() =>
+                    editor.chain().focus().updateAttributes('image', { printWidth: value }).run()
+                  }
+                  className={cn(
+                    'px-1.5 py-0.5 text-[0.625rem] transition',
+                    current === value
+                      ? 'bg-brand-500/25 text-fg'
+                      : 'text-fg-subtle hover:bg-white/5 hover:text-fg'
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </span>
           {editor.getAttributes('image').caption ? (
             <button
               type="button"
@@ -1098,6 +1291,30 @@ export function RichTextEditor({
       {lightbox.props ? <Lightbox {...lightbox.props} /> : null}
       {editable ? <SlashMenu editor={editor} commands={slashCommands} /> : null}
 
+      <MarkLinePicker
+        open={markLines}
+        onClose={() => setMarkLines(false)}
+        lines={markableLines}
+        marked={markedLineNumbers}
+        onToggle={(number) => {
+          const next = new Set(markedLineNumbers);
+          if (next.has(number)) next.delete(number);
+          else next.add(number);
+          /*
+           * No `.focus()`, deliberately. Focusing the editor pulls it out of the open dialog, and
+           * marking three lines of a request is three clicks rather than one — the dialog has to
+           * survive the first. `updateAttributes` works on the selection, which the dialog has
+           * not moved.
+           */
+          editor
+            ?.chain()
+            .updateAttributes('codeBlock', {
+              markLines: next.size ? [...next].sort((a, b) => a - b).join(',') : null,
+            })
+            .run();
+        }}
+      />
+
       <FigureRefPicker
         open={figureRefs}
         onClose={() => setFigureRefs(false)}
@@ -1111,6 +1328,64 @@ export function RichTextEditor({
           setFigureRefs(false);
         }}
       />
+
+      <FindingRefPicker
+        open={findingRefs}
+        onClose={() => setFindingRefs(false)}
+        findings={findings ?? []}
+        exclude={excludeFinding}
+        onPick={(finding) => {
+          editor
+            ?.chain()
+            .focus()
+            .insertFindingRef({
+              finding: String(finding.id ?? finding._id),
+              label: finding.title || 'a finding',
+            })
+            .run();
+          setFindingRefs(false);
+        }}
+      />
+
+      {/*
+        A footnote is typed into a prompt rather than inline, and that is the point of it: the words
+        belong at the foot of the page, so writing them in the middle of the sentence they qualify
+        is exactly the interruption the footnote exists to avoid.
+      */}
+      <Modal
+        open={footnoteDraft !== null}
+        onClose={() => setFootnoteDraft(null)}
+        title="Footnote"
+        description="A superscript mark goes where the cursor is. These words go to the foot of the page, and Word numbers them."
+        size="sm"
+      >
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const text = String(footnoteDraft ?? '').trim();
+            if (!text) return;
+            editor?.chain().focus().insertFootnote(text).run();
+            setFootnoteDraft(null);
+          }}
+        >
+          <Textarea
+            autoFocus
+            rows={3}
+            value={footnoteDraft ?? ''}
+            onChange={(event) => setFootnoteDraft(event.target.value)}
+            placeholder="Tested with nmap 7.94 using the default script set."
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setFootnoteDraft(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={!String(footnoteDraft ?? '').trim()}>
+              Add footnote
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <ScopeHostPicker
         open={scopePicker}

@@ -24,6 +24,7 @@ import { Card, CardBody, CardHeader } from '../ui/Card.jsx';
 import MarkedCopiesDialog from './MarkedCopiesDialog.jsx';
 import { Button } from '../ui/Button.jsx';
 import SendReportDialog from './SendReportDialog.jsx';
+import CloseoutCard from './CloseoutCard.jsx';
 import ShareLinksCard from './ShareLinksCard.jsx';
 import { Badge } from '../ui/Badge.jsx';
 import { Input, Select, Textarea, Toggle } from '../ui/Field.jsx';
@@ -87,7 +88,7 @@ const BLANK = {
  * the file — so "which version does the client actually have" has an answer six months
  * later, and a file somebody produces in an argument can be checked against it.
  */
-export default function DeliveryTab({ audit, editable, lastGenerated }) {
+export default function DeliveryTab({ audit, editable, lastGenerated, onReload }) {
   const toast = useToast();
   const { user, isAdmin } = useAuth();
   const { data, loading, reload } = useResource(`/audits/${audit._id}/deliveries`, {
@@ -841,6 +842,12 @@ export default function DeliveryTab({ audit, editable, lastGenerated }) {
         }. Removing it removes the evidence that this version was ever sent, and the removal is written to the activity log.`}
         confirmLabel="Remove"
       />
+      {/*
+        The call that follows the delivery, in the place the sequence puts it: the report went
+        out, then this happened, then the retest. See CloseoutCard for why it is not a tab.
+      */}
+      <CloseoutCard audit={audit} editable={editable} onReload={onReload} />
+
       <SendReportDialog
         open={sendOpen}
         onClose={() => setSendOpen(false)}

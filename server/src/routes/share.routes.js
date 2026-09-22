@@ -41,7 +41,6 @@ import multer from 'multer';
 import { z } from 'zod';
 
 import { Audit } from '../models/audit.model.js';
-import { Notification } from '../models/notification.model.js';
 import { ShareLink } from '../models/share-link.model.js';
 import { Settings } from '../models/settings.model.js';
 import { ACTIONS } from '../models/activity.model.js';
@@ -68,6 +67,7 @@ import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { isRestricted } from '../services/classification.service.js';
 import { saveMedia } from '../services/media.service.js';
 import { visibleAuditFilter, visibleClientFilter } from '../utils/audit-scope.js';
+import { notify } from '../services/notify.service.js';
 
 const router = Router();
 
@@ -233,7 +233,7 @@ router.post(
         .filter(Boolean);
       const told = [...new Set(team)];
       if (told.length) {
-        await Notification.insertMany(
+        await notify(
           told.map((user) => ({
             user,
             type: 'client-updated-finding',
@@ -292,7 +292,7 @@ async function tellTheTeam(audit, { type, message, findingId = null, target = ''
   const told = [...new Set(team)];
   if (!told.length) return;
 
-  await Notification.insertMany(
+  await notify(
     told.map((user) => ({
       user,
       type,
@@ -662,7 +662,7 @@ router.post(
         .filter(Boolean)
     )];
     if (team.length) {
-      await Notification.insertMany(
+      await notify(
         team.map((user) => ({
           user,
           type: 'client-updated-finding',

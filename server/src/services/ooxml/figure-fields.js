@@ -38,6 +38,27 @@
 /** The prefix every figure bookmark carries. Also how the pass finds them, so it is not cosmetic. */
 export const FIGURE_BOOKMARK = '_EngyFig_';
 
+/**
+ * The same, for tables.
+ *
+ * Tables were the half of this that never got done. A report's figures have been numbered since
+ * this file was written, and its tables — the scope, the affected hosts, the forty rows of a
+ * parsed sweep — have sat there unlabelled, so the prose could point at a screenshot and could not
+ * point at the table on the facing page.
+ *
+ * A separate prefix rather than a flag on the same one, because Word keeps `SEQ Figure` and
+ * `SEQ Table` as two independent counters and a reader expects the same: Figure 7 and Table 3 can
+ * be on the same page, and neither number is wrong. Everything else here — the token, the pass,
+ * the cached number beside the live field — is shared, because the problem is identical.
+ */
+export const TABLE_BOOKMARK = '_EngyTab_';
+
+/** Which counter a caption belongs to, keyed by the prefix its bookmark carries. */
+const SEQUENCES = [
+  { name: 'Figure', prefix: FIGURE_BOOKMARK },
+  { name: 'Table', prefix: TABLE_BOOKMARK },
+];
+
 const TOKEN = {
   /** Inside a caption's SEQ field: becomes the number alone. */
   num: (name) => `@@FIGNUM:${name}@@`,
@@ -73,13 +94,25 @@ const escapeXml = (value) =>
  * a Caption style, because then the paragraph style carries it — and required when it does not,
  * or "Figure 12" comes out as black body text with an italic grey caption beside it.
  *
- * @param {{name:string, id:number, label:string, separator?:string, rPr?:string}} figure
+ * `sequence` is the counter Word keeps, not the word printed — `label` is the word printed. The two
+ * are deliberately separate: a house that calls its pictures "Screenshot" still wants them counted
+ * on Word's `Figure` sequence, because that is the sequence a table of figures reads and the one
+ * every `REF` in the document already points at.
+ *
+ * @param {{name:string, id:number, label:string, sequence?:'Figure'|'Table', separator?:string, rPr?:string}} figure
  */
-export function captionPrefix({ name, id, label = 'Figure', separator = ' — ', rPr = '' }) {
+export function captionPrefix({
+  name,
+  id,
+  label = 'Figure',
+  sequence = 'Figure',
+  separator = ' — ',
+  rPr = '',
+}) {
   return (
     `<w:bookmarkStart w:id="${id}" w:name="${escapeXml(name)}"/>` +
     `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(label)} </w:t></w:r>` +
-    '<w:fldSimple w:instr=" SEQ Figure \\* ARABIC ">' +
+    `<w:fldSimple w:instr=" SEQ ${sequence === 'Table' ? 'Table' : 'Figure'} \\* ARABIC ">` +
     `<w:r>${rPr}<w:t>${TOKEN.num(name)}</w:t></w:r>` +
     '</w:fldSimple>' +
     `<w:bookmarkEnd w:id="${id}"/>` +
@@ -101,16 +134,104 @@ export function referenceField(name) {
   );
 }
 
+/**
+ * The placeholder a template's "list of figures" leaves behind, filled by the pass below.
+ *
+ * One paragraph, because that is what a rawxml tag replaces. What goes in its place is a whole
+ * `TOC` field with a cached list inside it, and that spans several paragraphs — which is why it
+ * cannot be written where the tag is and has to wait for the pass, the same way the numbers do.
+ */
+const LIST_TOKEN = (sequence) => `@@FIGLIST:${sequence}@@`;
+const LIST_PARAGRAPH = /<w:p(?=[ >])[^>]*>(?:(?!<w:p[ >])[\s\S])*?@@FIGLIST:(Figure|Table)@@[\s\S]*?<\/w:p>/g;
+
+/**
+ * A list of every figure (or table) in the report, for the front matter.
+ *
+ * Emitted as a placeholder now and built by `numberFigures` later, because the list is a fact
+ * about the finished document — which captions there are and in what order — and nothing knows
+ * that until the template has decided where everything goes.
+ *
+ * @param {'Figure'|'Table'} sequence
+ */
+export function listOfCaptions(sequence = 'Figure') {
+  return `<w:p><w:r><w:t>${LIST_TOKEN(sequence === 'Table' ? 'Table' : 'Figure')}</w:t></w:r></w:p>`;
+}
+
+/**
+ * The finished list: a real `TOC` field with a readable copy of its answer already inside it.
+ *
+ * Both halves, for exactly the reason the numbers need both. The field is what makes the list
+ * survive editing — a reader who deletes a finding and refreshes gets a list without its figures,
+ * and Word adds the page numbers we cannot know. The cached copy is what everything that does not
+ * evaluate fields sees: LibreOffice in some configurations, a PDF printed by a converter, a
+ * preview. A field alone shows those readers "Right-click to update field" at the front of the
+ * document; a static list alone goes stale the first time anybody edits it.
+ *
+ * `\h` makes each entry a link to its caption, `\z` keeps the page numbers out of web view, and
+ * `\c "Figure"` is what ties the list to the `SEQ Figure` fields the captions carry — which is why
+ * `captionPrefix` uses Word's own sequence names even when the printed label is "Screenshot".
+ */
+function listBlock(sequence, entries) {
+  /*
+   * No entries means no paragraphs, which is deliberately the whole of the empty case: a template
+   * carrying this tag unconditionally, used on a proposal with no evidence in it, prints nothing
+   * rather than a heading over a blank.
+   */
+  const paragraph = (entry, index) =>
+    '<w:p><w:pPr><w:pStyle w:val="TableofFigures"/></w:pPr>' +
+    (index === 0
+      ? '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+        `<w:r><w:instrText xml:space="preserve"> TOC \\h \\z \\c "${sequence}" </w:instrText></w:r>` +
+        '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+      : '') +
+    `<w:hyperlink w:anchor="${escapeXml(entry.name)}">` +
+    '<w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>' +
+    `<w:t xml:space="preserve">${escapeXml(entry.text)}</w:t></w:r></w:hyperlink>` +
+    (index === entries.length - 1 ? '<w:r><w:fldChar w:fldCharType="end"/></w:r>' : '') +
+    '</w:p>';
+
+  return entries.map(paragraph).join('');
+}
+
+/** A paragraph, for finding the ones a caption lives in. Paragraphs do not nest, so this is safe. */
+const PARAGRAPH = /<w:p(?=[ >])[^>]*>(?:(?!<w:p[ >])[\s\S])*?<\/w:p>/g;
+const TEXT = /<w:t(?=[ >])[^>]*>([\s\S]*?)<\/w:t>/g;
+
+/**
+ * Every caption in the document, in the order a reader meets them.
+ *
+ * Read back off the finished XML rather than collected as the captions were written, and that is
+ * the point: writing order is not document order, and a list built from the first would disagree
+ * with the numbers built from the second. Run after the numbers are substituted, so what it reads
+ * is the caption exactly as it will be read — "Figure 7 — The request", number and all.
+ */
+function captionsIn(xml, prefix) {
+  const marker = new RegExp(`<w:bookmarkStart\\b[^>]*w:name="(${prefix}[^"]+)"`);
+  const out = [];
+  for (const match of xml.matchAll(PARAGRAPH)) {
+    const name = marker.exec(match[0])?.[1];
+    if (!name) continue;
+    const text = [...match[0].matchAll(TEXT)].map((t) => t[1]).join('').trim();
+    if (text) out.push({ name, text });
+  }
+  return out;
+}
+
 /** Exactly what `referenceField` produces, so a whole reference can be replaced in one go. */
 const REFERENCE = new RegExp(
-  '<w:fldSimple w:instr=" REF (' +
+  '<w:fldSimple w:instr=" REF ((?:' +
     FIGURE_BOOKMARK +
-    '[^ "]+) \\\\h "><w:r><w:t>@@FIGREF:[^@]*@@</w:t></w:r></w:fldSimple>',
+    '|' +
+    TABLE_BOOKMARK +
+    ')[^ "]+) \\\\h "><w:r><w:t>@@FIGREF:[^@]*@@</w:t></w:r></w:fldSimple>',
   'g'
 );
 
 const NUMBER_TOKEN = /@@FIGNUM:([^@]+)@@/g;
-const BOOKMARK_START = new RegExp(`<w:bookmarkStart\\b[^>]*w:name="(${FIGURE_BOOKMARK}[^"]+)"`, 'g');
+const BOOKMARK_START = new RegExp(
+  `<w:bookmarkStart\\b[^>]*w:name="((?:${FIGURE_BOOKMARK}|${TABLE_BOOKMARK})[^"]+)"`,
+  'g'
+);
 
 /**
  * Numbers every figure in the finished document, and resolves every reference to one.
@@ -119,11 +240,14 @@ const BOOKMARK_START = new RegExp(`<w:bookmarkStart\\b[^>]*w:name="(${FIGURE_BOO
  * — which matters more here than usual, because the failure mode is a document that looks fine
  * until page 12.
  *
+ * Figures and tables are counted separately, because Word counts them separately and a reader
+ * expects it: Figure 7 and Table 3 on the same page are both right.
+ *
  * @param {string} xml `word/document.xml` after rendering
- * @param {{label?:string}} [options]
- * @returns {{xml:string, count:number, referenced:number, missing:string[]}}
+ * @param {{label?:string, tableLabel?:string}} [options]
+ * @returns {{xml:string, count:number, tables:number, referenced:number, missing:string[]}}
  */
-export function numberFigures(xml, { label = 'Figure' } = {}) {
+export function numberFigures(xml, { label = 'Figure', tableLabel = 'Table' } = {}) {
   const source = String(xml ?? '');
 
   /*
@@ -131,10 +255,23 @@ export function numberFigures(xml, { label = 'Figure' } = {}) {
    * A bookmark seen twice keeps its first number — the same screenshot printed in two findings is
    * one figure as far as a reader is concerned, and giving it two numbers would make the second
    * reference to it point somewhere the reader has already been told about.
+   *
+   * One counter per sequence. Interleaving them would number the third picture 5 because two
+   * tables happened to come before it, and then say 5 in a document whose table of figures — which
+   * Word builds from its own `SEQ Figure` field, not from this — says 3.
    */
   const numbers = new Map();
+  const counts = new Map(SEQUENCES.map((sequence) => [sequence.prefix, 0]));
+  const labels = { [FIGURE_BOOKMARK]: label, [TABLE_BOOKMARK]: tableLabel };
+  /** Which sequence a bookmark belongs to, by the prefix it carries. */
+  const prefixOf = (name) => SEQUENCES.find((sequence) => name.startsWith(sequence.prefix))?.prefix;
+
   for (const match of source.matchAll(BOOKMARK_START)) {
-    if (!numbers.has(match[1])) numbers.set(match[1], numbers.size + 1);
+    if (numbers.has(match[1])) continue;
+    const prefix = prefixOf(match[1]);
+    if (!prefix) continue;
+    counts.set(prefix, counts.get(prefix) + 1);
+    numbers.set(match[1], counts.get(prefix));
   }
 
   let referenced = 0;
@@ -160,10 +297,38 @@ export function numberFigures(xml, { label = 'Figure' } = {}) {
       return `<w:r><w:t xml:space="preserve">${escapeXml(MISSING_FIGURE)}</w:t></w:r>`;
     }
     referenced += 1;
-    return whole.replace(/@@FIGREF:[^@]*@@/, `${escapeXml(label)} ${number}`);
+    /* "Table 3", not "Figure 3", when that is what it points at. */
+    const word = labels[prefixOf(name)] ?? label;
+    return whole.replace(/@@FIGREF:[^@]*@@/, `${escapeXml(word)} ${number}`);
   });
 
-  return { xml: out, count: numbers.size, referenced, missing };
+  /*
+   * And last, the lists — after the numbers, because an entry reads "Figure 7 — The request" and
+   * the 7 only exists once the substitution above has run.
+   */
+  let listed = 0;
+  out = out.replace(LIST_PARAGRAPH, (_whole, sequence) => {
+    const entries = captionsIn(out, sequence === 'Table' ? TABLE_BOOKMARK : FIGURE_BOOKMARK);
+    listed += entries.length;
+    return listBlock(sequence, entries);
+  });
+
+  return {
+    xml: out,
+    count: counts.get(FIGURE_BOOKMARK),
+    tables: counts.get(TABLE_BOOKMARK),
+    referenced,
+    listed,
+    missing,
+  };
 }
 
-export default { numberFigures, captionPrefix, referenceField, FIGURE_BOOKMARK, MISSING_FIGURE };
+export default {
+  numberFigures,
+  captionPrefix,
+  referenceField,
+  listOfCaptions,
+  FIGURE_BOOKMARK,
+  TABLE_BOOKMARK,
+  MISSING_FIGURE,
+};

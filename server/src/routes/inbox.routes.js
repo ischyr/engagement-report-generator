@@ -30,7 +30,54 @@ router.get(
   asyncHandler(async (req, res) => {
     const me = req.user._id;
 
-    const audits = await Audit.find(visibleAuditFilter(req.user))
+    /**
+     * The engagements that could have something for you, rather than all of them.
+     *
+     * Every section below is about *you*: a review you are a reviewer on, a finding assigned to
+     * you or one you wrote, a question asked of you, a check you gave out or were given. An
+     * engagement where none of those is true contributes nothing, and reading it is pure cost.
+     *
+     * That cost was not hypothetical. `visibleAuditFilter` scopes a normal account to the
+     * engagements it is on — bounded by a career, which for somebody four years in is hundreds —
+     * and for an **admin** it returns no clause at all, so the inbox read every engagement in the
+     * instance, with every finding's comments and every test check, on every load of the page
+     * people leave open all day. The list it produced was short either way; the read was not.
+     *
+     * Written as an `$or` inside `visibleAuditFilter`'s `extra`, so the access rule still wraps
+     * it in `$and` and cannot be widened by what is added here — which is the whole reason that
+     * helper takes an `extra` rather than expecting callers to merge clauses themselves.
+     *
+     * Each arm is deliberately *at least* as wide as the section it serves. The filtering that
+     * decides what is really outstanding — a stale approval, a resolved comment, a done check —
+     * stays in the loop below, where it can see the whole engagement. A query that tried to be
+     * exact about those would be a second copy of the rules, and the copy that is subtly wrong is
+     * the one that silently drops something from somebody's queue.
+     */
+    const mightHaveSomething = {
+      $or: [
+        /* A review you are on. State and freshness are judged below. */
+        { reviewers: me },
+        /* Findings that are yours to write, and comments on findings you wrote. */
+        { 'findings.assignedTo': me },
+        { 'findings.createdBy': me },
+        /*
+         * A question about one finding, asked of you or left open for anybody.
+         *
+         * `$elemMatch`, and this is not style. Written as
+         * `{ 'findings.secondOpinion.askedAt': { $ne: null } }` it reads as "some finding has one",
+         * and Mongo means the opposite: `$ne` against an array path matches only when *no* element
+         * equals the value, so a single other finding with the field at its default of null made
+         * the whole engagement fail the arm — and the question vanished from the inbox of the one
+         * person it had been addressed to.
+         */
+        { findings: { $elemMatch: { 'secondOpinion.askedAt': { $ne: null } } } },
+        /* Checks you were given, and checks you gave out. */
+        { 'testChecks.assignedTo': me },
+        { 'testChecks.createdBy': me },
+      ],
+    };
+
+    const audits = await Audit.find(visibleAuditFilter(req.user, mightHaveSomething))
       // Only the fields the four sections need: an inbox must not drag whole
       // engagements (and their evidence-heavy rich text) across the wire.
       .select(
@@ -43,11 +90,21 @@ router.get(
            * they are four short strings a finding, not the rich text this select exists to avoid.
            */
           'findings.identifier findings.assignedTo findings.cvssv3 findings.severityOverride ' +
-          'testChecks'
+          /* One question about one finding — see `secondOpinion` on the finding schema. */
+          'findings.secondOpinion ' +
+          /*
+           * The six fields a check row is made of, not the whole check.
+           *
+           * A test check carries its result, its notes, who verified it and when — none of which
+           * this page shows, and all of which was being read across every engagement.
+           */
+          'testChecks._id testChecks.title testChecks.category testChecks.createdAt ' +
+          'testChecks.done testChecks.assignedTo testChecks.createdBy'
       )
       .populate([
         { path: 'company', select: 'name shortName' },
         { path: 'findings.comments.author', select: 'username firstname lastname' },
+        { path: 'findings.secondOpinion.askedBy', select: 'username firstname lastname' },
         { path: 'testChecks.createdBy', select: 'username' },
       ])
       .sort({ updatedAt: -1 });
@@ -64,6 +121,7 @@ router.get(
     const checks = [];
     /** Checks somebody handed to me and I have not done. */
     const assigned = [];
+    const opinions = [];
     /** Findings that are mine to write. */
     const findings = [];
 
@@ -115,6 +173,36 @@ router.get(
             sortScore: rated.sortScore,
           });
         }
+      }
+
+      /*
+       * Somebody asked about one finding, and it is still open.
+       *
+       * Addressed to you, or addressed to nobody on an engagement you are on — "whoever is free"
+       * is half of why anybody asks, and a question nobody can see is the chat message this
+       * replaced. Your own question is not news to you.
+       *
+       * Included on an approved engagement, unlike the assigned list above: a question asked
+       * during sign-off is exactly the one still worth answering, and the engagement being locked
+       * is what makes it urgent rather than what makes it moot.
+       */
+      for (const finding of audit.findings ?? []) {
+        const ask = finding.secondOpinion;
+        if (!ask?.askedAt || ask.answeredAt) continue;
+        if (sameId(ask.askedBy, me)) continue;
+        if (ask.of && !sameId(ask.of, me)) continue;
+        opinions.push({
+          auditId: audit._id,
+          auditName: audit.name,
+          findingId: finding._id,
+          findingTitle: finding.title,
+          identifier: finding.identifier ?? null,
+          question: ask.question ?? '',
+          askedBy: ask.askedBy,
+          askedAt: ask.askedAt,
+          /* Whether it was aimed at you or left open, which changes how much it is your problem. */
+          addressed: Boolean(ask.of),
+        });
       }
 
       for (const finding of audit.findings ?? []) {
@@ -192,6 +280,11 @@ router.get(
 
     const unreadMentions = mentions.filter((mention) => !mention.read).length;
 
+    /* Aimed at you first, then oldest first: a question nobody has answered for a week is the
+     * one that has stopped being a question and started being a problem. */
+    opinions.sort(
+      (a, b) => Number(b.addressed) - Number(a.addressed) || new Date(a.askedAt) - new Date(b.askedAt)
+    );
     comments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     checks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -203,13 +296,15 @@ router.get(
         checks: checks.length,
         assigned: assigned.length,
         findings: findings.length,
+        opinions: opinions.length,
         total:
           reviews.length +
           unreadMentions +
           comments.length +
           checks.length +
           assigned.length +
-          findings.length,
+          findings.length +
+          opinions.length,
       },
       reviews,
       mentions,
@@ -217,6 +312,7 @@ router.get(
       checks,
       assigned,
       findings,
+      opinions,
     });
   })
 );

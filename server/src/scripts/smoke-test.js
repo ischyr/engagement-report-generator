@@ -107,6 +107,8 @@ const LOOP_LOCAL_TAGS = new Set([
   'printTruncated', 'printOmitted', 'printTotal', 'printUnit', 'commandRaw',
   // The marked lines of a step's output, and their guard: only inside {{#enumeration}}.
   'notes', 'hasNotes', 'noteCount', 'snippet', 'moved',
+  // The pane row by row, and which of those rows were marked — a step's own pane, not the report's.
+  'outputRows', 'markedLines',
   // And when it was run, which is a fact about a step rather than about the engagement.
   'outputAt', 'outputAge', 'reRun', 'previousOutputAt',
   'cwe', 'owasp', 'severityIndex', 'evidenceCount', 'hasEvidence', 'isOpen',

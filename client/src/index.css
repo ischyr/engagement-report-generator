@@ -457,6 +457,111 @@
   outline: 2px solid var(--color-brand-400);
 }
 
+/* A reference to another finding: the same chip as a figure reference, in its own colour so the
+   two are distinguishable at a glance in a paragraph that carries both. */
+.engy-prose .engy-findingref {
+  display: inline;
+  padding: 0.05em 0.35em;
+  border-radius: 0.35em;
+  background: color-mix(in srgb, var(--color-med) 16%, transparent);
+  color: var(--color-med);
+  font-size: 0.9em;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.engy-prose .engy-findingref::before {
+  content: '⚑ ';
+  opacity: 0.7;
+}
+.engy-prose .engy-findingref.ProseMirror-selectednode {
+  outline: 2px solid var(--color-med);
+}
+
+/* A footnote, shown as its own words rather than a number: the number depends on where this lands
+   in the finished document and Word is the only thing that knows it. Superscript and small, so a
+   sentence carrying one still reads as a sentence. */
+.engy-prose .engy-footnote {
+  display: inline;
+  vertical-align: super;
+  font-size: 0.68em;
+  padding: 0.1em 0.4em;
+  border-radius: 0.35em;
+  background: color-mix(in srgb, var(--color-info) 14%, transparent);
+  color: var(--color-info);
+  cursor: default;
+  user-select: none;
+}
+.engy-prose .engy-footnote.ProseMirror-selectednode {
+  outline: 2px solid var(--color-info);
+}
+
+/* Callout boxes, coloured to match what `CALLOUTS` in html2ooxml.js draws — so what is on screen
+   is what comes out of the generator rather than merely standing in for it. The left bar is the
+   whole idea: it is what makes these scannable when somebody flicks through for the warnings. */
+.engy-prose aside[data-callout] {
+  margin: 0.85em 0;
+  padding: 0.6rem 0.85rem;
+  border-left: 3px solid var(--callout-edge);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--callout-edge) 9%, transparent);
+}
+.engy-prose aside[data-callout] > :first-child {
+  margin-top: 0;
+}
+.engy-prose aside[data-callout] > :last-child {
+  margin-bottom: 0;
+}
+.engy-prose aside[data-callout]::before {
+  content: var(--callout-label);
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--callout-edge);
+}
+.engy-prose aside[data-callout='note'] {
+  --callout-edge: #3b82f6;
+  --callout-label: 'Note';
+}
+.engy-prose aside[data-callout='tip'] {
+  --callout-edge: #22c55e;
+  --callout-label: 'Recommended';
+}
+.engy-prose aside[data-callout='warning'] {
+  --callout-edge: #f59e0b;
+  --callout-label: 'Warning';
+}
+.engy-prose aside[data-callout='danger'] {
+  --callout-edge: #ef4444;
+  --callout-label: 'Danger';
+}
+
+/* A page break. Drawn as what it means rather than as a rule, because the editor has a rule too
+   and the two must not look alike — one is a line in the document, the other is where the page
+   ends. */
+.engy-prose hr[data-page-break] {
+  border: 0;
+  height: auto;
+  margin: 1.1em 0;
+  border-top: 1px dashed var(--color-line);
+  text-align: center;
+  overflow: visible;
+}
+.engy-prose hr[data-page-break]::after {
+  content: 'Page break';
+  position: relative;
+  top: -0.65em;
+  padding: 0 0.5rem;
+  background: var(--color-bg);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-fg-subtle);
+}
+
 .engy-prose mark {
   background: #6b5a1f;
   color: #fff6d8;
@@ -471,6 +576,34 @@
   overflow: hidden;
   font-size: 0.875rem;
   table-layout: fixed;
+}
+
+/* A table's caption, which is a paragraph above it rather than a <caption> inside — see
+   TableCaption.js for why. Styled like a figure's caption, because to a reader it is the same
+   thing, and sitting on the table it names: above it, where a table caption goes, and with the
+   margin closed so the two read as one object.
+
+   The label is drawn here rather than typed, so what is on screen matches what the generator
+   writes — the real number depends on where this lands in the finished document, which only the
+   template decides, so the editor shows the word without pretending to know the number. */
+.engy-prose p[data-table-caption] {
+  margin: 0.75em 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--color-fg-muted);
+}
+.engy-prose p[data-table-caption]::before {
+  content: 'Table — ';
+  font-style: normal;
+  opacity: 0.7;
+}
+.engy-prose p[data-table-caption] + table {
+  margin-top: 0.25em;
+}
+.engy-prose p[data-table-caption]:empty::after {
+  content: 'Name this table';
+  opacity: 0.45;
 }
 .engy-prose th,
 .engy-prose td {

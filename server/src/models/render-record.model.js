@@ -87,6 +87,19 @@ const renderRecordSchema = new mongoose.Schema(
     },
     /** How long it took, in milliseconds. Worth having when a template starts taking a minute. */
     ms: { type: Number, default: null },
+    /**
+     * Where those milliseconds went, by the stage that spent them.
+     *
+     * The total has always been here and has never been actionable: a report that takes ninety
+     * seconds is a fact nobody can do anything with until it says which ninety. The queue already
+     * names the stages out loud to the progress bar — opening the template, fetching the evidence,
+     * laying it out, assembling it — so this is the same boundaries, timed.
+     *
+     * A map rather than named fields, because the stages are the render's own business and adding
+     * one should not be a migration. Keys are the stage names as the progress bar says them, so
+     * the number a person waited through and the number recorded are labelled the same.
+     */
+    stages: { type: Map, of: Number, default: undefined },
 
     /**
      * What the document was built from, counted.

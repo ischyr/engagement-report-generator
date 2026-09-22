@@ -18,9 +18,41 @@ import { Audit } from '../models/audit.model.js';
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, notFound } from '../utils/http-error.js';
 import { assertMayOpen } from '../services/classification.service.js';
+import { membershipExpired } from '../utils/audit-scope.js';
+import { forbidden } from '../utils/http-error.js';
 import { reportSnapshot, snapshotDifferences } from '../utils/report-fingerprint.js';
 
 const router = Router();
+
+/**
+ * Both halves of "may this person see this engagement".
+ *
+ * `assertMayOpen` is the classification rule and nothing else: it returns immediately unless the
+ * engagement is restricted. Every route here called it and stopped, so the render register — which
+ * template produced a document, what changed between two versions of it, how many findings it had
+ * — answered to any signed-in account that knew an engagement id.
+ *
+ * The membership rule is the one `loadAudit` applies to everything under `/audits/:id`: creator,
+ * collaborator or reviewer, and not past an end date. Written out rather than imported from that
+ * file, which is nine thousand lines and would bring the whole of it along for one comparison.
+ *
+ * Every projection in this file therefore has to carry `memberUntil` — a route that leaves it out
+ * would silently stop enforcing the expiry half, which is the quietest way for this to come back.
+ */
+function assertMayRead(audit, user) {
+  assertMayOpen(audit, user);
+  if (user.role === 'admin') return;
+  const uid = String(user._id);
+  const allowed = [
+    audit.creator?._id?.toString() ?? audit.creator?.toString(),
+    ...(audit.collaborators ?? []).map((person) => person._id?.toString() ?? person.toString()),
+    ...(audit.reviewers ?? []).map((person) => person._id?.toString() ?? person.toString()),
+  ];
+  if (!allowed.includes(uid)) throw forbidden('You do not have access to this engagement');
+  if (membershipExpired(audit, user)) {
+    throw forbidden('Your access to this engagement ended. Ask whoever runs it to extend it.');
+  }
+}
 
 /** The shape both endpoints answer in, so one component renders either. */
 const present = (record) => ({
@@ -40,6 +72,9 @@ const present = (record) => ({
   size: record.size,
   outputHash: record.outputHash,
   ms: record.ms,
+  /* Where the time went, so a slow render is a thing somebody can act on rather than endure.
+     A Map on the document; a plain object on the wire. */
+  stages: record.stages ? Object.fromEntries(record.stages) : null,
   counts: record.counts ?? {},
   settings: record.settings ?? {},
   audit: record.audit?._id ?? record.audit ?? null,
@@ -113,18 +148,21 @@ function differences(now, before) {
 /**
  * Every render of one engagement, newest first, each with what changed since the one before it.
  *
- * Read through the engagement rather than by itself, so a restricted engagement's renders are as
- * restricted as the engagement — `assertMayOpen` is the same gate the editor goes through.
+ * Read through the engagement rather than by itself, so a render is exactly as restricted as the
+ * engagement it came from — `assertMayRead` is the same pair of rules the editor goes through.
+ *
+ * It used to say that about `assertMayOpen`, which was the bug: that function is the
+ * classification rule alone and says nothing about membership.
  */
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     if (!req.query.audit) throw badRequest('Say which engagement.');
     const audit = await Audit.findById(req.query.audit).select(
-      'name reference creator collaborators reviewers classification deletedAt'
+      'name reference creator collaborators reviewers classification deletedAt memberUntil'
     );
     if (!audit) throw notFound('Engagement not found');
-    assertMayOpen(audit, req.user);
+    assertMayRead(audit, req.user);
 
     const records = await RenderRecord.find({ audit: audit._id })
       .sort({ createdAt: -1 })
@@ -179,10 +217,10 @@ router.get(
     }
 
     const audit = await Audit.findById(from.audit).select(
-      'name reference creator collaborators reviewers classification deletedAt'
+      'name reference creator collaborators reviewers classification deletedAt memberUntil'
     );
     if (!audit) throw notFound('Engagement not found');
-    assertMayOpen(audit, req.user);
+    assertMayRead(audit, req.user);
 
     /* Oldest first whichever way round they were named: "what changed" has a direction. */
     const [before, after] = from.createdAt <= to.createdAt ? [from, to] : [to, from];
@@ -190,7 +228,10 @@ router.get(
       before: present(before),
       after: present(after),
       changed: differences(present(after), present(before)),
-      contentChanged: snapshotDifferences(before.snapshot ?? null, after.snapshot ?? null),
+      /* With the words, because this is the one view somebody is reading the change in. */
+      contentChanged: snapshotDifferences(before.snapshot ?? null, after.snapshot ?? null, {
+        withText: true,
+      }),
     });
   })
 );
@@ -215,14 +256,16 @@ router.get(
 
     const audit = await Audit.findById(record.audit);
     if (!audit) throw notFound('Engagement not found');
-    assertMayOpen(audit, req.user);
+    assertMayRead(audit, req.user);
 
     res.json({
       renderId: record.renderId,
       at: record.createdAt,
       filename: record.filename,
       /* Null when the render predates snapshots — reported as unknown, never as unchanged. */
-      contentChanged: snapshotDifferences(record.snapshot ?? null, reportSnapshot(audit)),
+      contentChanged: snapshotDifferences(record.snapshot ?? null, reportSnapshot(audit), {
+        withText: true,
+      }),
     });
   })
 );
@@ -238,14 +281,14 @@ router.get(
   '/:renderId',
   asyncHandler(async (req, res) => {
     const record = await RenderRecord.findOne({ renderId: req.params.renderId }).populate([
-      { path: 'audit', select: 'name reference creator collaborators reviewers classification' },
+      { path: 'audit', select: 'name reference creator collaborators reviewers classification memberUntil' },
     ]);
     if (!record) {
       throw notFound(
         'No record of that render. It may predate this feature, or have been generated on another instance.'
       );
     }
-    if (record.audit) assertMayOpen(record.audit, req.user);
+    if (record.audit) assertMayRead(record.audit, req.user);
     res.json(present(record));
   })
 );

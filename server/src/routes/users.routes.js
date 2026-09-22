@@ -948,6 +948,131 @@ router.post(
   })
 );
 
+/** At most this many in one go. A mistake with a select-all is the risk a bulk action carries. */
+const BULK_MAX = 50;
+
+const bulkIds = z.object({
+  ids: z
+    .array(z.string().regex(/^[0-9a-fA-F]{24}$/))
+    .min(1, 'Pick at least one account')
+    .max(BULK_MAX, `${BULK_MAX} at a time`),
+});
+
+/**
+ * What each of these accounts is still holding.
+ *
+ * Deleting an account does not hand on what it owns — see the note on the delete below — so the
+ * least this can do is say what is about to become unattributed *before* somebody presses the
+ * button, rather than leaving them to find out from a report with a blank author on it.
+ *
+ * Counts, not lists. The question at this moment is "is any of this a surprise", and a dialog
+ * that answers it with four hundred finding titles is one nobody reads to the bottom of.
+ */
+router.post(
+  '/bulk-delete/preview',
+  requireRole('admin'),
+  validate(bulkIds),
+  asyncHandler(async (req, res) => {
+    const ids = [...new Set(req.body.ids)];
+    const people = await User.find({ _id: { $in: ids } }).select('username firstname lastname roles');
+
+    const holdings = await Promise.all(
+      people.map(async (person) => {
+        const id = person._id;
+        const [onEngagements, assignedFindings, checks, tokens, notes, bookings, hours] =
+          await Promise.all([
+            Audit.countDocuments({
+              deletedAt: null,
+              $or: [{ creator: id }, { collaborators: id }, { reviewers: id }],
+            }),
+            Audit.countDocuments({ deletedAt: null, 'findings.assignedTo': id }),
+            Audit.countDocuments({ deletedAt: null, 'testChecks.assignedTo': id }),
+            (await import('../models/api-token.model.js')).ApiToken.countDocuments({
+              owner: id,
+              revokedAt: null,
+            }),
+            (await import('../models/scratch.model.js')).Scratch.countDocuments({ user: id }),
+            Booking.countDocuments({ user: id }),
+            TimeEntry.countDocuments({ user: id }),
+          ]);
+
+        return {
+          id: String(id),
+          name: [person.firstname, person.lastname].filter(Boolean).join(' ') || person.username,
+          username: person.username,
+          roles: person.roles ?? [],
+          holds: { onEngagements, assignedFindings, checks, tokens, notes, bookings, hours },
+        };
+      })
+    );
+
+    /* The same two refusals the delete applies, answered before anybody presses anything. */
+    const admins = await User.countDocuments({ roles: 'admin' });
+    const deletingAdmins = holdings.filter((row) => row.roles.includes('admin')).length;
+
+    res.json({
+      accounts: holdings,
+      missing: ids.filter((id) => !holdings.some((row) => row.id === id)),
+      /** Why this batch would be refused, if it would be. Empty means it will go through. */
+      refusals: [
+        ...(ids.includes(String(req.user._id)) ? ['Your own account is in the selection.'] : []),
+        ...(admins - deletingAdmins < 1
+          ? ['That would leave the instance with no administrator.']
+          : []),
+      ],
+    });
+  })
+);
+
+/**
+ * Deletes several accounts.
+ *
+ * Its own route rather than the browser calling the single delete in a loop, so the selection is
+ * weighed as a selection: refused entirely rather than partly. A batch that deleted four of six and
+ * then stopped would leave somebody re-reading a list to work out which four, and both guards here
+ * are about the *selection* rather than about any one account in it.
+ *
+ * The admin count is belt and braces and is, today, unreachable. Only an admin can call this and
+ * nobody may delete themselves, so at least one administrator survives every batch: the caller.
+ * It is kept for the change that would break that — opening this to another role — which is
+ * precisely when nobody would think to add it.
+ *
+ * It does **not** hand on what these people owned. Findings they were assigned stay assigned to an
+ * account that is gone, approvals they gave still count, and their bookings and hours become rows
+ * with no name — which is why `/bulk-delete/preview` exists and why the dialog says so out loud.
+ * Reassigning is a larger piece of work and is not pretended at here.
+ */
+router.post(
+  '/bulk-delete',
+  requireRole('admin'),
+  validate(bulkIds),
+  asyncHandler(async (req, res) => {
+    const ids = [...new Set(req.body.ids)];
+
+    if (ids.includes(String(req.user._id))) {
+      throw badRequest('You cannot delete your own account.');
+    }
+
+    const found = await User.find({ _id: { $in: ids } }).select('roles username');
+    if (!found.length) throw notFound('None of those accounts exist');
+
+    const admins = await User.countDocuments({ roles: 'admin' });
+    const deletingAdmins = found.filter((person) => (person.roles ?? []).includes('admin')).length;
+    if (admins - deletingAdmins < 1) {
+      throw badRequest(
+        'At least one admin account must remain. Take an administrator out of the selection, or make somebody else one first.'
+      );
+    }
+
+    const result = await User.deleteMany({ _id: { $in: found.map((person) => person._id) } });
+    res.json({
+      deleted: result.deletedCount ?? 0,
+      /* Named back, so the toast can say who went rather than how many. */
+      usernames: found.map((person) => person.username),
+    });
+  })
+);
+
 router.delete(
   '/:id',
   requireRole('admin'),

@@ -21,10 +21,10 @@ import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
 import { visibleAuditFilter } from '../utils/audit-scope.js';
 import { ACTIONS, recordActivity } from '../services/activity.service.js';
-import { Notification } from '../models/notification.model.js';
 import { Leave } from '../models/leave.model.js';
 import { Settings } from '../models/settings.model.js';
 import { candidatesFor, capacityFor } from '../services/staffing.service.js';
+import { notify } from '../services/notify.service.js';
 import {
   clashingLeave,
   describeClash,
@@ -73,7 +73,7 @@ async function noticeBookingChange({ booking, audit, actor, what, clash = null }
 
   const who = [actor.firstname, actor.lastname].filter(Boolean).join(' ') || actor.username;
   const where = audit?.reference || audit?.name || 'an engagement';
-  await Notification.create({
+  await notify({
     user: owner,
     type: 'booking-changed',
     actor: actor._id,

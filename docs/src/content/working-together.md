@@ -212,6 +212,46 @@ finding is hours, and a comment is minutes.
 has been waiting on — a finding they marked fixed that nobody has retested, a question they asked
 through their link that nobody has answered. See [The client link](/client-link).
 
+## What reaches your bell
+
+Nineteen kinds of notification, and until now no way to switch any of them off — so on a busy
+instance the bell filled with bookings being moved and the review request somebody was blocked on
+scrolled out of sight. A list you have learned to ignore is worse than no list.
+
+**Profile → What you are told about** has them all, grouped by why you would turn one off: work
+that is yours, people talking, the diary, the client, the instance. Everything is on until you turn
+it off, and a switch saves the moment you flip it.
+
+Two cannot be switched off. **A new sign-in on your account** is a security notice — the whole
+value of it is arriving when you were not expecting it, and somebody who could set your preferences
+could otherwise turn off the thing that tells you they are there. **Your account is approved** is
+the message saying your account works at all.
+
+> [!note]
+> Switching a kind off means it is never created, not that it is hidden. An unread count pointing
+> at something you cannot see would be worse than silence — and it means turning a kind back on
+> shows you what happens next rather than a backlog of what you deliberately missed.
+
+Nothing here changes what *happens*: a finding is still assigned to you, a render still fails. It
+changes only whether you are told at the time.
+
+## The hours you did not log
+
+Hours are the one record here that nothing ever asked for. A booking is made in advance and a
+finding announces itself; a timesheet is a thing somebody has to *remember*, at the end of a week
+in which remembering is the last thing on their mind. So the figure that lets the next job of the
+same shape be quoted honestly — sold against planned against actual — is the figure most likely to
+be missing, and it is missing in exactly the weeks that were worst.
+
+The **Inbox** lists the days you worked on something and did not log, over the last three weeks,
+oldest first. Two hours, four, six or eight, in one click. It is taken from the activity log, which
+already knows who did what and when: *"you edited four findings on Thursday"* is as close to *"you
+worked on Thursday"* as anything in the database gets.
+
+A prompt, not a claim. A day spent reading rather than typing never appears at all, and a day you
+log stops being asked about. Nothing is recorded about a day you dismiss — it is a question asked
+afresh each time the page is opened, rather than a to-do list that would then need its own tidying.
+
 ## Right now
 
 **Right now** in the sidebar is presence, aggregated: who is in which engagement at this moment and

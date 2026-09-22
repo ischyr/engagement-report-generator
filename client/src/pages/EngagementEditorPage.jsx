@@ -55,6 +55,7 @@ import PreflightPanel from '../components/engagement/PreflightPanel.jsx';
 import ReviewReadiness from '../components/engagement/ReviewReadiness.jsx';
 import ReviewerSuggestions from '../components/engagement/ReviewerSuggestions.jsx';
 import HoldBanner, { HoldButton } from '../components/engagement/HoldBanner.jsx';
+import SizeBanner from '../components/engagement/SizeBanner.jsx';
 
 import { calculateCvss } from '../lib/cvss.js';
 
@@ -922,6 +923,12 @@ export default function EngagementEditorPage() {
       <HoldBanner audit={audit} editable={canWrite} onReload={reload} />
 
       {/*
+        Silent until the engagement is 60% of the size one can be. Above the tabs, because the
+        thing it warns about — a save refused mid-paragraph — happens on whichever tab you are on.
+      */}
+      <SizeBanner auditId={audit._id} />
+
+      {/*
         Said plainly rather than left to be inferred from the engagement's absence elsewhere.
         Nothing is locked — this is about which lists it appears in.
       */}
@@ -1073,7 +1080,13 @@ export default function EngagementEditorPage() {
       {tab === 'credentials' ? <CredentialsTab audit={audit} editable={canWrite} /> : null}
       {tab === 'time' ? <TimeTab audit={audit} editable={canWrite} /> : null}
       {tab === 'delivery' ? (
-        <DeliveryTab audit={audit} editable={canWrite} lastGenerated={lastGenerated} />
+        <DeliveryTab
+          audit={audit}
+          editable={canWrite}
+          lastGenerated={lastGenerated}
+          /* The closeout card writes to the engagement, so it needs the page to refetch it. */
+          onReload={reload}
+        />
       ) : null}
       {/* Signing is not editing the report, so an approved engagement still allows it. */}
       {tab === 'signatures' ? <SignaturesTab audit={audit} editable={canWrite} /> : null}

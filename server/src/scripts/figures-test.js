@@ -514,5 +514,131 @@ check(
   uncaptioned
 );
 
+/* ------------------------------------------------------------ how wide it prints --- */
+
+console.log('\nHow wide a picture prints:');
+
+/**
+ * A picture with a shape, so a width can be asserted rather than described.
+ *
+ * 400 by 200 is comfortably inside the default column, which is the interesting case: it is the
+ * one where the old rule — natural size, shrunk if it does not fit — does nothing at all.
+ */
+const WIDE_PNG = encodePng(Buffer.alloc(400 * 200 * 4, 0x40), 400, 200);
+const WIDE_ID = 'd'.repeat(24);
+
+/** The EMU Word is told to draw it at. */
+const extentOf = (xml) => {
+  const m = /<wp:extent cx="(\d+)" cy="(\d+)"\/>/.exec(xml);
+  return m ? { cx: Number(m[1]), cy: Number(m[2]) } : null;
+};
+
+const draw = (html) =>
+  htmlToOoxml(html, {
+    parts: makeParts(),
+    media: new Map([[WIDE_ID, { buffer: WIDE_PNG, ext: 'png' }]]),
+    availableStyles: null,
+  });
+
+/* The column the default page gives, and what a pixel is worth, from the converter's own figures. */
+const COLUMN_TWIPS = 9360;
+const EMU_PER_PX = 9525;
+const EMU_PER_TWIP = 635;
+
+const natural = extentOf(draw(`<p><img src="/api/media/${WIDE_ID}"></p>`));
+check(
+  'a picture that fits is left at the size it was captured',
+  natural?.cx === 400 * EMU_PER_PX,
+  JSON.stringify(natural)
+);
+
+const half = extentOf(draw(`<p><img src="/api/media/${WIDE_ID}" data-width="50"></p>`));
+check(
+  'half the column is half the column',
+  half?.cx === Math.round(COLUMN_TWIPS * 0.5) * EMU_PER_TWIP,
+  JSON.stringify(half)
+);
+check(
+  'and the shape is kept',
+  half && Math.abs(half.cx / half.cy - 2) < 0.01,
+  half ? String(half.cx / half.cy) : 'none'
+);
+
+/*
+ * Asking for the full column *enlarges* a picture that was smaller than it. That is the whole
+ * point of asking: an error dialog captured at 320 pixels is legible and lost on the page, and
+ * nothing before this could make it any bigger.
+ */
+const full = extentOf(draw(`<p><img src="/api/media/${WIDE_ID}" data-width="100"></p>`));
+check(
+  'the full column enlarges a picture that was narrower than it',
+  full?.cx === COLUMN_TWIPS * EMU_PER_TWIP && full.cx > natural.cx,
+  JSON.stringify(full)
+);
+
+/* Nonsense is ignored rather than obeyed: a width of 0 or 400 per cent is not a layout. */
+for (const bad of ['0', '-50', '400', 'wide', '']) {
+  check(
+    `"${bad}" is ignored and the picture keeps its own size`,
+    extentOf(draw(`<p><img src="/api/media/${WIDE_ID}" data-width="${bad}"></p>`))?.cx ===
+      natural.cx
+  );
+}
+
+/* --------------------------------------------------------------- side by side ----- */
+
+console.log('\nTwo screenshots in a two-column table:');
+
+const sideBySide = draw(
+  '<table><tbody><tr>' +
+    `<td><img src="/api/media/${WIDE_ID}"></td>` +
+    `<td><img src="/api/media/${WIDE_ID}"></td>` +
+    '</tr></tbody></table>'
+);
+const inCells = [...sideBySide.matchAll(/<wp:extent cx="(\d+)" cy="(\d+)"\/>/g)].map((m) => ({
+  cx: Number(m[1]),
+  cy: Number(m[2]),
+}));
+
+/* Word's default cell margin is 108 twips a side, which the converter takes off the column. */
+const CELL = Math.floor(COLUMN_TWIPS / 2) - 216;
+
+check('both pictures are drawn', inCells.length === 2, String(inCells.length));
+check(
+  'each is measured against its cell, not against the page',
+  inCells.every((extent) => extent.cx === CELL * EMU_PER_TWIP),
+  JSON.stringify(inCells)
+);
+check(
+  'so neither is wider than the half it sits in',
+  inCells.every((extent) => extent.cx < Math.floor(COLUMN_TWIPS / 2) * EMU_PER_TWIP)
+);
+check(
+  'and both keep their shape',
+  inCells.every((extent) => Math.abs(extent.cx / extent.cy - 2) < 0.01),
+  JSON.stringify(inCells.map((e) => e.cx / e.cy))
+);
+
+/* A share inside a cell is a share of the cell — the two rules compose rather than fight. */
+const halfOfACell = extentOf(
+  draw(
+    '<table><tbody><tr>' +
+      `<td><img src="/api/media/${WIDE_ID}" data-width="50"></td>` +
+      '<td>x</td></tr></tbody></table>'
+  )
+);
+check(
+  'a share inside a cell is a share of the cell',
+  halfOfACell?.cx === Math.round(CELL * 0.5) * EMU_PER_TWIP,
+  JSON.stringify(halfOfACell)
+);
+
+/* The picture outside a table must not have moved: this is the check that says the cell rule
+ * changed only cells. */
+check(
+  'a picture outside a table is unaffected by any of it',
+  extentOf(draw(`<p><img src="/api/media/${WIDE_ID}"></p>`))?.cx === 400 * EMU_PER_PX
+);
+
 console.log(`\nRESULT: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

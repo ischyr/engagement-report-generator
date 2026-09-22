@@ -15,6 +15,7 @@ import { Alert } from '../components/ui/Alert.jsx';
 import { CodeInput, EnrolmentPanel } from '../components/auth/TwoFactor.jsx';
 import SessionsCard from '../components/auth/SessionsCard.jsx';
 import ApiTokensCard from '../components/auth/ApiTokensCard.jsx';
+import NotificationPreferences from '../components/auth/NotificationPreferences.jsx';
 import SkillsEditor from '../components/team/SkillsEditor.jsx';
 
 /** Enable / disable the authenticator for your own account. */
@@ -319,6 +320,11 @@ export default function ProfilePage() {
 
       {/* The other kind of credential this account can hold: one for a script. */}
       <ApiTokensCard />
+
+      {/* What reaches your bell, and what does not. Below the credentials because it is a
+          preference rather than a way in, and above the details because people come looking for
+          it far more often than they change their job title. */}
+      <NotificationPreferences />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card as="form" onSubmit={saveProfile}>

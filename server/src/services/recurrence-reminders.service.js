@@ -16,9 +16,9 @@
  */
 
 import { Audit } from '../models/audit.model.js';
-import { Notification } from '../models/notification.model.js';
 import { membershipExpired } from '../utils/audit-scope.js';
 import { log } from '../utils/logger.js';
+import { notify } from './notify.service.js';
 
 /** How far ahead to warn. Long enough to book people and agree a window with the client. */
 export const RECURRENCE_LEAD_DAYS = 30;
@@ -100,7 +100,7 @@ export async function remindRecurringEngagements({
     }
 
     const label = audit.reference ? `${audit.name} (${audit.reference})` : audit.name;
-    await Notification.insertMany(
+    await notify(
       recipients.map((id) => ({
         user: id,
         type: 'engagement-due',

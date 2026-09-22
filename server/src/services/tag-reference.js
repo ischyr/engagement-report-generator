@@ -905,6 +905,18 @@ export const TAG_GROUPS = [
         kind: 'rich',
       },
       {
+        tag: 'outputRows',
+        description:
+          "Loop of { n, text } — the pane exactly as it will print, one entry per row, for a template that would rather draw it than take {{@rich.output}}. `n` is the real line number in the output, and 0 on a row the print policy wrote rather than the tool ('… 146 lines not printed') — which is the one thing the text cannot tell you, and what stops a hand-drawn gutter numbering a notice as evidence.",
+        kind: 'loop',
+      },
+      {
+        tag: 'markedLines',
+        description:
+          'The line numbers this pane actually shows that somebody had marked. A marked line is carried in whatever the print policy cut, so this is never empty when {{#hasNotes}} is true — which is what lets a template pick those lines out.',
+        kind: 'loop',
+      },
+      {
         tag: 'rich.notes',
         description:
           'The marked lines as a ready-made list — the line and its text in a code run, the note after it. Inside the loop, write {{@rich.notes}}. Guard with {{#hasNotes}}, or loop {{#notes}} yourself if you would rather lay them out by hand.',
@@ -1078,6 +1090,52 @@ export const TAG_GROUPS = [
           'The same numbers as one line of coloured segments — {{@rich.severityBar}}. For a summary box or a cover page, where a ring would not fit.',
         kind: 'rich',
       },
+      {
+        tag: 'rich.remediationChart',
+        description:
+          'Where the remediation stands, as a ring — {{@rich.remediationChart}}. Fixed, retesting and still open, in the status colours rather than the severity ones, with its own legend. The chart a retest report is actually about: the severity breakdown says what was found, this says what has been done about it. Must be alone in its paragraph.',
+        kind: 'rich',
+      },
+      {
+        tag: 'rich.findingsByCategory',
+        description:
+          'The weakness classes, ranked — {{@rich.findingsByCategory}}. One row per category, longest bar first, capped at twelve. A table rather than a picture: every label and every count is real text in the template’s own typeface, and only the bars are drawn. Ranked rather than a ring because a category list has a long tail, and twelve wedges is twelve wedges nobody can tell apart.',
+        kind: 'rich',
+      },
+      {
+        tag: 'rich.findingsByType',
+        description:
+          'The same for weakness type — {{@rich.findingsByType}}. Empty when nothing is classified, so guard the heading above it if that should go too.',
+        kind: 'rich',
+      },
+      {
+        tag: 'rich.listOfFigures',
+        description:
+          'A list of every figure in the report, for the front matter — {{@rich.listOfFigures}}, with your own heading above it. One line per figure in finished-document order, each linking to its caption. A real TOC field, so the client’s own edits rebuild it and Word fills in the page numbers; it carries a readable copy inside as well, for readers that do not evaluate fields at all. Prints nothing when there are no figures, so it is safe in a template a proposal also uses.',
+        kind: 'rich',
+      },
+      {
+        tag: 'rich.listOfTables',
+        description:
+          'The same for the tables you have named — {{@rich.listOfTables}}. Word counts tables separately from figures, so Table 3 and Figure 7 can share a page and both be right. Only captioned tables appear: a table nobody named is not numbered and is not listed.',
+        kind: 'rich',
+      },
+    ],
+  },
+  {
+    title: 'The closeout call',
+    description:
+      'The other end of the job: the call where the client was walked through the report. A kickoff has always been recorded on the proposal; this is the half that had nowhere to go, and it is what a retest report opens with. Every field was typed by whoever was on the call — nothing here is generated.',
+    tags: [
+      { tag: 'closeout.held', description: 'Whether the call has been recorded. Guard the whole section with {{#closeout.held}} — an engagement whose closeout has not happened then prints nothing.' },
+      { tag: 'closeout.heldOn', description: 'The day it happened, in the instance date format.' },
+      { tag: 'closeout.attendeesTheirs', description: 'Who was there on the client side, in words. None of them has an account here, so this is free text and not a list of people.' },
+      { tag: 'closeout.attendeesOurs', description: 'And who was there from the team.' },
+      { tag: 'closeout.notes', description: 'What was walked through.' },
+      { tag: 'closeout.disputed', description: 'What the client disagreed with. Its own field because it is the sentence a retest starts from, and a year later the only record that the disagreement happened. {{#closeout.hasDisputed}} guards a heading over it.' },
+      { tag: 'closeout.commitments', description: 'What they committed to about the estate rather than about one finding — a rebuild, a decommissioning. Per-finding dates and accepted risks live on the findings. {{#closeout.hasCommitments}} guards it.' },
+      { tag: 'closeout.retestOn', description: 'When a retest was agreed for, if one was. {{#closeout.hasRetest}} guards it.' },
+      { tag: 'closeout.recordedBy', description: 'Who on the team wrote it down, which is a different question from who was on the call.' },
     ],
   },
   {

@@ -31,6 +31,7 @@ import { GridFSBucket, ObjectId } from 'mongodb';
 
 import { RenderJob, JOB_TTL_HOURS } from '../models/render-job.model.js';
 import log from '../utils/logger.js';
+import { notify } from './notify.service.js';
 
 const BUCKET = 'renderjobs';
 /** How often to clear out collected and expired documents. */
@@ -199,6 +200,7 @@ export async function pump() {
         await runJob(job);
       } catch (error) {
         log.warn(`Render job ${job._id} failed: ${error.message}`);
+        const message = String(error.message ?? error).slice(0, 2000);
         await RenderJob.updateOne(
           { _id: job._id },
           {
@@ -208,15 +210,55 @@ export async function pump() {
               /* The message the synchronous route would have put in the response body. A render
                  fails for reasons the person can act on — no template, a broken tag — so it is
                  shown rather than swallowed into a log they cannot read. */
-              error: String(error.message ?? error).slice(0, 2000),
+              error: message,
               finishedAt: new Date(),
             },
           }
         ).catch(() => {});
+        await tellThem(job, message);
       }
     }
   } finally {
     pumping = false;
+  }
+}
+
+/**
+ * Tells whoever asked for it that their render failed.
+ *
+ * The whole point of queueing a render is that you walk away from it. So the one thing a queued
+ * render has to do that a synchronous one does not is come back and say what happened — and it
+ * did not: the page polled the job while it was open, and closing the tab lost the outcome
+ * entirely. Somebody would come back an hour later to a report that had simply never arrived.
+ *
+ * Only on failure. A render that worked announces itself by being downloadable, and a notification
+ * for every successful one would be noise that teaches people to ignore the failures.
+ *
+ * Never throws. This is a courtesy on a path that has already failed once; a notification that
+ * could take the queue down with it would be worse than no notification.
+ */
+async function tellThem(job, message) {
+  if (!job?.requestedBy) return;
+  try {
+    await notify({
+      user: job.requestedBy,
+      type: 'render-failed',
+      audit: job.audit ?? null,
+      auditName: job.subject ?? '',
+      /*
+       * The reason, in the notification itself.
+       *
+       * A render fails for reasons the person can act on — a template with a misspelled tag, a
+       * missing file — and "it failed, go and look" costs them the trip. Trimmed, because these
+       * are read in a list.
+       */
+      message: `The report for "${job.subject || 'an engagement'}" could not be generated — ${String(
+        message
+      ).slice(0, 200)}`,
+      href: job.audit ? `/engagements/${job.audit}?tab=report` : '/engagements',
+    });
+  } catch (error) {
+    log.warn(`Could not notify ${job.requestedBy} about a failed render: ${error.message}`);
   }
 }
 
@@ -236,6 +278,17 @@ export async function recoverOrphans() {
     { status: 'running', attempts: { $lt: MAX_ATTEMPTS } },
     { $set: { status: 'queued', stage: 'Waiting for the one in front', progress: 0 } }
   );
+  /*
+   * Read before they are marked, so the people waiting on them can be told.
+   *
+   * This is the failure most worth a notification and the one hardest to notice: the job was
+   * abandoned by a restart, so nobody's page was even open to poll it.
+   */
+  const abandoned = await RenderJob.find({
+    status: 'running',
+    attempts: { $gte: MAX_ATTEMPTS },
+  }).select('audit subject requestedBy');
+
   const gaveUp = await RenderJob.updateMany(
     { status: 'running', attempts: { $gte: MAX_ATTEMPTS } },
     {
@@ -247,6 +300,10 @@ export async function recoverOrphans() {
       },
     }
   );
+
+  for (const job of abandoned) {
+    await tellThem(job, 'the server restarted while it was being generated');
+  }
   if (retry.modifiedCount || gaveUp.modifiedCount) {
     log.info(
       `Render queue: ${retry.modifiedCount} job(s) requeued after a restart, ${gaveUp.modifiedCount} abandoned`

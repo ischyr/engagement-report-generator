@@ -4,6 +4,9 @@ export const NOTIFICATION_TYPES = [
   'mention',
   'review-requested',
   'comment-on-your-finding',
+  /* One question about one finding — the review interaction the quorum is the wrong shape for. */
+  'second-opinion-asked',
+  'second-opinion-given',
   'check-assigned',
   'finding-assigned',
   'new-sign-in',
@@ -12,6 +15,8 @@ export const NOTIFICATION_TYPES = [
   'leave-requested',
   'leave-decided',
   'engagement-due',
+  /* The one thing a queued job owes you: a queued render is walked away from by design. */
+  'render-failed',
   'engagement-held',
   'account-awaiting-approval',
   'account-approved',

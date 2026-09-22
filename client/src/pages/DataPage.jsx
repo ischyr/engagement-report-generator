@@ -11,6 +11,7 @@ import {
   Plus,
   Tags,
   Trash2,
+  TriangleAlert,
   Users,
 } from 'lucide-react';
 
@@ -18,10 +19,10 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useResource } from '../hooks/useResource.js';
-import { formatBytes } from '../lib/utils.js';
+import { cn, formatBytes } from '../lib/utils.js';
 
 import { Card, CardHeader } from '../components/ui/Card.jsx';
-import { PageHeader, SearchInput, Tabs, TagChip } from '../components/ui/Misc.jsx';
+import { PageHeader, SearchInput, Stat, TagChip } from '../components/ui/Misc.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
 import { Input, Select, Textarea } from '../components/ui/Field.jsx';
@@ -651,19 +652,60 @@ function RecordModal({ open, onClose, spec, record, onSaved }) {
  * engagement document: the old 16 MB-per-engagement ceiling was an accidental
  * limit, and with it gone the only real one is disk.
  */
-function EvidenceUsage() {
-  const { data } = useResource('/media/usage', { initial: null });
-  if (!data) return null;
-
+/**
+ * The collections, down the side, with how much is in each.
+ *
+ * A tab strip of eight said nothing about any of them: you found out there were no contacts by
+ * clicking Contacts, and you found out a collection was empty by emptying it. The count is the
+ * thing somebody actually came to the page knowing they wanted, and the dot beside it is the
+ * thing they did not know they wanted — reference data goes wrong by being half-filled rather
+ * than by being absent, so a client with no contact is worth a mark and no error.
+ *
+ * A list rather than the old strip because eight tabs wrap on a laptop, and a wrapped tab strip
+ * is a navigation nobody can point at twice.
+ */
+function CollectionRail({ keys, active, onPick, counts, gaps }) {
   return (
-    <span
-      title="Screenshots and evidence stored outside the engagement documents. Reclaim unreferenced files with `npm run media:gc`."
-      className="flex items-center gap-2 rounded-lg border border-line-soft bg-surface/60 px-3 py-2 text-xs text-fg-muted"
-    >
-      <HardDrive size={14} className="shrink-0 text-fg-subtle" />
-      <span className="font-medium text-fg">{formatBytes(data.bytes)}</span>
-      of evidence in {data.files} file{data.files === 1 ? '' : 's'}
-    </span>
+    <nav className="flex flex-col gap-0.5">
+      {keys.map((key) => {
+        const spec = COLLECTIONS[key];
+        const Icon = spec.icon;
+        const count = counts?.[key];
+        const gap = gaps?.[key];
+        const on = key === active;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onPick(key)}
+            aria-current={on ? 'page' : undefined}
+            className={cn(
+              'flex items-center gap-2.5 rounded-lg border-l-2 px-3 py-2 text-left transition',
+              on
+                ? 'border-brand-400 bg-brand-500/10 text-fg'
+                : 'border-transparent text-fg-muted hover:bg-white/[0.03] hover:text-fg'
+            )}
+          >
+            <Icon size={14} className={cn('shrink-0', on ? 'text-brand-300' : 'text-fg-subtle')} />
+            <span className="min-w-0 flex-1 truncate text-xs font-medium">{spec.label}</span>
+            {/* The gap first, because it is the reason to look; the count second, because it is
+                the reason to click. */}
+            {gap?.count ? (
+              <span
+                title={`${gap.count} ${gap.label}`}
+                className="flex items-center gap-1 rounded bg-med/15 px-1 text-[0.5625rem] tabular-nums text-med"
+              >
+                <TriangleAlert size={9} />
+                {gap.count}
+              </span>
+            ) : null}
+            <span className="shrink-0 text-[0.625rem] tabular-nums text-fg-subtle">
+              {count ?? '—'}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -678,6 +720,20 @@ export default function DataPage() {
 
   const [typing, setQuery, query] = useUrlSearch('q', '');
   const [collapsed, setCollapsed] = useState(() => new Set());
+  /** Show only the records with something missing. Off unless somebody asks. */
+  const [onlyGaps, setOnlyGaps] = useState(false);
+
+  /*
+   * How much of each collection there is, and how much of it is half-filled.
+   *
+   * One request for the whole page rather than one per tab: the rail shows every count at once,
+   * and eight requests to draw a sidebar would be eight round trips for a number each.
+   */
+  const summary = useResource('/data/summary', { initial: null });
+  const counts = summary.data?.counts ?? {};
+  const gaps = summary.data?.gaps ?? {};
+  const perCompany = summary.data?.perCompany ?? {};
+  const usage = useResource('/media/usage', { initial: null });
 
   const spec = COLLECTIONS[active];
   const { data, error, loading, reload } = useResource(spec.path, { initial: [] });
@@ -685,17 +741,33 @@ export default function DataPage() {
 
   const mayEdit = canWrite && (!spec.adminOnly || isAdmin);
 
+/**
+   * Whether this record is one of the ones the rail is warning about.
+   *
+   * The same rule the server counts by, written once here so the filter and the badge cannot
+   * disagree — a list that hides a row the count included is worse than no filter.
+   */
+  const isGap = (key, row) => {
+    if (key === 'companies') return (perCompany[row._id]?.contacts ?? 0) === 0;
+    if (key === 'clients') return !row.company;
+    return false;
+  };
+
   /** What the search box matched, or everything when the collection has no search. */
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!spec.searchIn || !needle) return all;
-    return all.filter((row) =>
-      spec
-        .searchIn(row)
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle))
-    );
-  }, [all, query, spec]);
+    const searched =
+      !spec.searchIn || !needle
+        ? all
+        : all.filter((row) =>
+            spec
+              .searchIn(row)
+              .filter(Boolean)
+              .some((value) => String(value).toLowerCase().includes(needle))
+          );
+    return onlyGaps ? searched.filter((row) => isGap(active, row)) : searched;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [all, query, spec, onlyGaps, active, perCompany]);
 
   /**
    * The rows under their headings: `[{ key, label, rows }]`, or null when this collection is flat.
@@ -741,10 +813,39 @@ export default function DataPage() {
       return next;
     });
 
+  /*
+   * What a company's row shows, beyond what the record itself carries.
+   *
+   * Two numbers that were on the page nowhere: how many engagements this client has, and how many
+   * contacts. Both are the reason somebody opens a client, and both come from the summary rather
+   * than from widening the list endpoint every other caller shares.
+   */
+  const columns =
+    active === 'companies'
+      ? [
+          ...spec.columns,
+          {
+            key: '_engagements',
+            label: 'Engagements',
+            render: (row) => perCompany[row._id]?.engagements ?? 0,
+          },
+          {
+            key: '_contacts',
+            label: 'Contacts',
+            render: (row) =>
+              (perCompany[row._id]?.contacts ?? 0) || (
+                <span className="text-med" title="No contact on file — a report has nobody to address">
+                  none
+                </span>
+              ),
+          },
+        ]
+      : spec.columns;
+
   /** One record's row. Shared, so a grouped list and a flat one cannot drift apart. */
   const recordRow = (row) => (
     <TR key={row._id}>
-      {spec.columns.map((column) => (
+      {columns.map((column) => (
         <TD
           key={column.key}
           className={
@@ -809,25 +910,67 @@ export default function DataPage() {
       <PageHeader
         title="Clients & data"
         description="The reference data every engagement draws on — companies, contacts, taxonomies and your own custom fields."
-        actions={<EvidenceUsage />}
       />
 
-      <Tabs
-        options={TAB_ORDER.filter((key) => !COLLECTIONS[key].adminOnly || isAdmin).map((key) => ({
-          value: key,
-          label: COLLECTIONS[key].label,
-        }))}
-        value={active}
-        onChange={(next) => {
-          setActive(next);
-          setEditing(null);
-          setQuery('');
-          setCollapsed(new Set());
-        }}
-        size="sm"
-      />
+{/*
+        What is on the page, before the page.
 
-      <Card>
+        Four numbers rather than a chart: these are counts of things somebody maintains, and the
+        only question asked of them is "is that about right". The last one is the one that is not
+        a count of rows — it is the reason this page has a storage warning at all.
+      */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat icon={Building2} label="Clients" value={counts.companies ?? '—'} sub={
+          gaps.companies?.count
+            ? `${gaps.companies.count} ${gaps.companies.label}`
+            : 'all have a contact'
+        } tone={gaps.companies?.count ? 'med' : 'neutral'} />
+        <Stat icon={Users} label="Contacts" value={counts.clients ?? '—'} sub={
+          gaps.clients?.count ? `${gaps.clients.count} ${gaps.clients.label}` : 'all reachable'
+        } tone={gaps.clients?.count ? 'med' : 'neutral'} />
+        <Stat
+          icon={Tags}
+          label="Reference lists"
+          value={
+            (counts['audit-types'] ?? 0) +
+            (counts.sections ?? 0) +
+            (counts['vulnerability-types'] ?? 0) +
+            (counts['vulnerability-categories'] ?? 0) +
+            (counts.languages ?? 0) +
+            (counts['custom-fields'] ?? 0)
+          }
+          sub="entries across the taxonomies"
+        />
+        {/* Not a count of rows, and the only number here nobody typed in: what the screenshots
+            weigh. `npm run media:gc` is the answer to it being larger than expected. */}
+        <span title="Screenshots and recordings stored outside the engagement documents. Reclaim unreferenced files with `npm run media:gc`.">
+          <Stat
+            icon={HardDrive}
+            label="Evidence stored"
+            value={usage.data ? formatBytes(usage.data.bytes) : '—'}
+            sub={usage.data ? `in ${usage.data.files} file${usage.data.files === 1 ? '' : 's'}` : ''}
+          />
+        </span>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[15rem_1fr] lg:items-start">
+        <Card className="p-2 lg:sticky lg:top-4">
+          <CollectionRail
+            keys={TAB_ORDER.filter((key) => !COLLECTIONS[key].adminOnly || isAdmin)}
+            active={active}
+            counts={counts}
+            gaps={gaps}
+            onPick={(next) => {
+              setActive(next);
+              setEditing(null);
+              setQuery('');
+              setOnlyGaps(false);
+              setCollapsed(new Set());
+            }}
+          />
+        </Card>
+
+        <Card>
         <CardHeader
           title={spec.label}
           icon={spec.icon}
@@ -842,6 +985,22 @@ export default function DataPage() {
                   className="w-full sm:w-64"
                 />
               ) : null}
+              {/*
+                Only where there is something to filter to. A toggle that always narrows to nothing
+                is a control that has to be explained, and the rail already said whether this
+                collection has any.
+              */}
+              {gaps[active]?.count ? (
+                <Button
+                  variant={onlyGaps ? 'secondary' : 'ghost'}
+                  size="sm"
+                  icon={TriangleAlert}
+                  title={`Show only the ${gaps[active].count} ${gaps[active].label}`}
+                  onClick={() => setOnlyGaps((current) => !current)}
+                >
+                  {onlyGaps ? 'Showing gaps' : `${gaps[active].count} ${gaps[active].label}`}
+                </Button>
+              ) : null}
               {mayEdit ? (
                 <Button variant="primary" size="sm" icon={Plus} onClick={() => setCreating(true)}>
                   Add {spec.singular}
@@ -851,7 +1010,7 @@ export default function DataPage() {
           }
         />
         {loading ? (
-          <SkeletonRows rows={4} columns={spec.columns.length} />
+          <SkeletonRows rows={4} columns={columns.length} />
         ) : error ? (
           <ErrorState error={error} onRetry={reload} />
         ) : all.length === 0 ? (
@@ -866,7 +1025,7 @@ export default function DataPage() {
         ) : (
           <Table>
             <THead>
-              {spec.columns.map((column) => (
+              {columns.map((column) => (
                 <TH key={column.key}>{column.label}</TH>
               ))}
               <TH width={spec.rowLink ? '11rem' : '5rem'} />
@@ -880,7 +1039,7 @@ export default function DataPage() {
                     const Chevron = open ? ChevronDown : ChevronRight;
                     return [
                       <TR key={`group-${group.key}`} className="bg-white/[0.03]">
-                        <TD colSpan={spec.columns.length + 1} className="py-2">
+                        <TD colSpan={columns.length + 1} className="py-2">
                           <button
                             type="button"
                             onClick={() => toggleGroup(group.key)}
@@ -902,15 +1061,18 @@ export default function DataPage() {
                 : rows.map(recordRow)}
               {rows.length === 0 ? (
                 <TR>
-                  <TD colSpan={spec.columns.length + 1} className="py-6 text-center text-sm text-fg-muted">
-                    Nothing matches “{query}”.
+                  <TD colSpan={columns.length + 1} className="py-6 text-center text-sm text-fg-muted">
+                    {onlyGaps && !query.trim()
+                      ? 'Nothing here is missing anything.'
+                      : `Nothing matches “${query}”.`}
                   </TD>
                 </TR>
               ) : null}
             </TBody>
           </Table>
         )}
-      </Card>
+        </Card>
+      </div>
 
       <RecordModal
         open={creating || Boolean(editing)}
@@ -920,7 +1082,11 @@ export default function DataPage() {
         }}
         spec={spec}
         record={editing}
-        onSaved={() => reload({ quiet: true })}
+        onSaved={() => {
+          reload({ quiet: true });
+          /* The rail counts and the per-company numbers are derived from what just changed. */
+          summary.reload({ quiet: true });
+        }}
       />
 
       <ConfirmDialog

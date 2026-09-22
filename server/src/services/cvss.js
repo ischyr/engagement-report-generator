@@ -302,6 +302,32 @@ export function findingSeverity(finding) {
     sortScore: overridden ? BAND_MIDPOINT[severity] ?? 0 : (cvss.baseScore ?? -1),
   };
 }
+/**
+ * The order findings are printed in — one definition, because four places used to have their own.
+ *
+ * Three of them sorted by the vector's own base score, which is the wrong key the moment anybody
+ * overrides a severity: a Critical argued down to Medium still scored 9.1, so it led the list on
+ * the findings tab and in the renumber while the report printed it among the Mediums. The visible
+ * symptom was a report numbered VULN-03, VULN-01, VULN-05 straight after somebody pressed the
+ * button whose entire purpose is to stop that happening. `sortScore` is the key that already knew
+ * about overrides; this is everyone using it.
+ *
+ * `scoreOf` exists for the report, which has already rated every finding by the time it sorts and
+ * would otherwise compute all of it a second time. It must return `findingSeverity().sortScore`.
+ *
+ * Returns a new array. Callers that renumber rely on the elements still being the same documents.
+ */
+export function orderFindings(list, { manual = false, scoreOf = null } = {}) {
+  const score = scoreOf ?? ((finding) => findingSeverity(finding).sortScore);
+  const out = [...(list ?? [])];
+  return manual
+    ? out.sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
+    : out.sort(
+        (a, b) =>
+          score(b) - score(a) || String(a.title ?? '').localeCompare(String(b.title ?? ''))
+      );
+}
+
 export const COMPLEXITY_LABELS = { 1: 'Easy', 2: 'Medium', 3: 'Complex' };
 
 /** Human-readable value names, so templates can print "Network" not "N". */

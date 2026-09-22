@@ -28,9 +28,12 @@
  * misconfigured script with delete rights is somebody's engagement quietly emptying out. Removal
  * stays a thing a person does while looking at the screen.
  *
- * No evidence upload yet, and no report generation. Both are wanted — the first for a CLI that
- * pipes tool output in, the second for a nightly build — and both are better absent than
- * half-promised, because adding an endpoint to v1 later is allowed and changing one is not.
+ * No report generation. It is wanted — for a nightly build — and better absent than half-promised,
+ * because adding an endpoint to v1 later is allowed and changing one is not.
+ *
+ * Evidence upload used to be on that list and no longer is: a script can put a screenshot in the
+ * evidence bin with an ordinary `curl -F`. It does not put one in a finding, because which write-up
+ * a capture belongs to is a decision somebody makes later while looking at it.
  */
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -55,8 +58,67 @@ import {
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
+import multer from 'multer';
+import {
+  ALLOWED_UPLOAD_TYPES,
+  MAX_MEDIA_BYTES,
+  MAX_VIDEO_BYTES,
+  saveMedia,
+  sniffImageType,
+  sniffVideoType,
+  unsupportedTypeMessage,
+} from '../services/media.service.js';
 
 const router = Router();
+
+/**
+ * The same upload rules the application's own route uses, and for the same reasons.
+ *
+ * The larger of the two ceilings here and the real one per kind in `saveMedia`: multer decides
+ * before it knows what the file is.
+ *
+ * The filter is looser than the application's own, in exactly one place — see the note inside it.
+ */
+const evidenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: Math.max(MAX_MEDIA_BYTES, MAX_VIDEO_BYTES), files: 1 },
+  fileFilter: (_req, file, cb) => {
+    /*
+     * `application/octet-stream` is let through, and only that one.
+     *
+     * A browser always declares a type; a script often does not, and the honest ones that say
+     * "some bytes" were being refused before anything looked at the bytes — by a filter sitting in
+     * front of a service whose whole principle is that *the content decides, not the header the
+     * client sent*. So the vague answer passes and `saveMedia` sniffs it, which is the check that
+     * was always doing the real work.
+     *
+     * Everything else declared is still refused here, because that is where the useful message
+     * lives: a QuickTime `.mov` gets told to export as MP4, which `saveMedia` could only answer
+     * with "not a recording we recognise".
+     */
+    if (ALLOWED_UPLOAD_TYPES[file.mimetype] || file.mimetype === 'application/octet-stream') {
+      return cb(null, true);
+    }
+    return cb(badRequest(unsupportedTypeMessage(file.mimetype)));
+  },
+}).single('file');
+
+/**
+ * The type to hand `saveMedia`, when the caller declared nothing useful.
+ *
+ * Only for `application/octet-stream` — anything else the caller declared is passed through
+ * unchanged, so a wrong-but-specific claim still meets the same refusal it always did. An
+ * unrecognisable body falls back to the declared type and is refused a line later by the service,
+ * with the service's own message.
+ */
+function declaredType(file) {
+  if (file.mimetype !== 'application/octet-stream') return file.mimetype;
+  const image = sniffImageType(file.buffer);
+  if (image) return Object.keys(ALLOWED_UPLOAD_TYPES).find((type) => ALLOWED_UPLOAD_TYPES[type] === image) ?? file.mimetype;
+  const video = sniffVideoType(file.buffer);
+  if (video) return Object.keys(ALLOWED_UPLOAD_TYPES).find((type) => ALLOWED_UPLOAD_TYPES[type] === video) ?? file.mimetype;
+  return file.mimetype;
+}
 
 /**
  * A ceiling per token, not per address.
@@ -107,6 +169,7 @@ router.get('/', (req, res) => {
       { method: 'GET', path: '/api/v1/engagements/:id/enumeration', scope: 'enumeration:read' },
       { method: 'GET', path: '/api/v1/engagements/:id/enumeration/:stepId', scope: 'enumeration:read' },
       { method: 'POST', path: '/api/v1/engagements/:id/enumeration', scope: 'enumeration:write' },
+      { method: 'POST', path: '/api/v1/engagements/:id/evidence', scope: 'evidence:write' },
     ],
     scopes: Object.entries(SCOPES).map(([name, meta]) => ({ name, ...meta })),
   });
@@ -427,6 +490,82 @@ router.post(
       target: step.title,
     });
     res.status(201).json({ step: v1Step(step, { output: body.output ?? '' }) });
+  })
+);
+
+/**
+ * A screenshot, from a script.
+ *
+ * The one thing this API could not do, and the reason it could not be driven from a terminal: a
+ * script could record that nmap ran and what it printed, and could not attach the picture of the
+ * admin panel it found. The header of this file has named it as wanted since the API was written.
+ *
+ * Lands in the **evidence bin** rather than in a finding. That is deliberate and it is the whole
+ * shape of the flow: a script captures while the work is happening and has no opinion about which
+ * write-up the picture belongs to, which is a decision somebody makes later while looking at it.
+ * The bin is exactly the place for a capture with no home yet.
+ *
+ * Multipart, like the application's own upload, so an ordinary `curl -F` works and a CLI does not
+ * have to base64 a 4 MB screenshot into a JSON body.
+ */
+router.post(
+  '/engagements/:id/evidence',
+  requireScope('evidence:write'),
+  (req, res, next) =>
+    evidenceUpload(req, res, (error) => (error ? next(error) : next())),
+  asyncHandler(async (req, res) => {
+    const audit = await loadTokenAudit(req);
+    /*
+     * `assertEditable` rather than a lighter check: adding evidence to an approved engagement is
+     * changing what the report can be built from, and a token should not be able to do through a
+     * script what the person holding it cannot do on the page.
+     */
+    assertEditable(audit, req.user);
+    if (!req.file) throw badRequest('No file was uploaded. Send it as multipart form field "file".');
+
+    const stored = await saveMedia({
+      buffer: req.file.buffer,
+      /*
+       * What it actually is, when the caller did not say.
+       *
+       * `saveMedia` takes a declared type and refuses anything it does not recognise — right for
+       * the browser, which always declares one, and wrong for a script piping bytes, which often
+       * sends `application/octet-stream` and means "have a look". Resolved here rather than by
+       * loosening `saveMedia`, because the strictness is correct on the path the application's own
+       * upload takes and this is the one caller that needs the other behaviour.
+       *
+       * The sniff is the same one `saveMedia` runs on the content a moment later, so a file that
+       * gets past this is still judged on its bytes and a shell script still gets nowhere.
+       */
+      contentType: declaredType(req.file),
+      filename: req.file.originalname,
+      uploader: req.user,
+      audit,
+    });
+
+    await recordTokenActivity({
+      audit,
+      req,
+      action: ACTIONS.MEDIA_UPLOADED,
+      target: req.file.originalname || 'a screenshot',
+    });
+
+    /*
+     * The URL is the useful half: it is what goes into a write-up, and a CLI's next step is
+     * printing it so somebody can paste it. `deduplicated` says whether this engagement already
+     * had these exact bytes, which is how a script that re-runs does not report forty new captures.
+     */
+    res.status(201).json({
+      evidence: {
+        id: stored.id,
+        url: stored.url,
+        bytes: stored.bytes,
+        width: stored.width,
+        height: stored.height,
+        kind: stored.kind,
+        deduplicated: Boolean(stored.deduplicated),
+      },
+    });
   })
 );
 

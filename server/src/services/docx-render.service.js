@@ -22,10 +22,13 @@ import Docxtemplater from 'docxtemplater';
 import env from '../config/env.js';
 import { DocxAssembler } from './ooxml/docx-parts.js';
 import { numberFigures } from './ooxml/figure-fields.js';
+import { packageProblems } from './ooxml/docx-validate.js';
+import { startFindingsOnNewPage } from './ooxml/finding-page-break.js';
 import { applyInheritedParts, openTemplateZip } from './template-inheritance.service.js';
 import { createParser, createTagNormaliser, DELIMITERS } from './template-parser.js';
 import { customPropertiesXml } from './provenance.service.js';
 import { HttpError, badRequest } from '../utils/http-error.js';
+import log from '../utils/logger.js';
 
 /**
  * Opens a template file and prepares everything a render needs from it.
@@ -122,7 +125,13 @@ export function ooxmlOptionsFor({ parts, numbering, media = new Map(), pub = {},
     /* "Figure 7 — The request", and prose that can point at it. See `figure-fields.js`. */
     figureNumbering: pub.figureNumbering !== false,
     figureLabel: pub.figureLabel || 'Figure',
+    /* And the same for tables, on Word's own separate counter. */
+    tableNumbering: pub.tableNumbering !== false,
+    tableLabel: pub.tableLabel || 'Table',
     codeTheme: pub.codeBlockTheme ?? 'terminal',
+    /* Colour by what the text is, and count the lines when asked. See `code-highlight.js`. */
+    codeHighlight: pub.codeHighlight !== false,
+    codeLineNumbers: Boolean(pub.codeLineNumbers),
     availableStyles: parts.styleIds,
     usableTwips: parts.usableTwips,
   };
@@ -144,7 +153,28 @@ export function renderDocx({
   describeError,
   provenance = null,
   figureLabel = 'Figure',
+  tableLabel = 'Table',
+  findingPerPage = false,
 }) {
+  /*
+   * One finding, one page — before the fill, not after.
+   *
+   * The opposite of the figure numbering below, and for the opposite reason. A figure's number is a
+   * fact about the finished document, so it can only be worked out once there is one. Where a
+   * finding *begins* is a fact about the template, and once the loop has been unrolled every
+   * iteration looks like every other paragraph in the file. So this is the one pass that has to
+   * happen first.
+   *
+   * A template it cannot be applied to is left alone and logged. Refusing to produce the report
+   * because a page break had nowhere to go would be the wrong trade for whoever is waiting for it.
+   */
+  if (findingPerPage) {
+    const before = zip.file('word/document.xml')?.asText() ?? '';
+    const result = startFindingsOnNewPage(before);
+    if (result.applied) zip.file('word/document.xml', result.xml);
+    else log.warn(`Findings were not started on new pages: ${result.reason}.`);
+  }
+
   let doc;
   try {
     doc = new Docxtemplater(zip, {
@@ -179,7 +209,7 @@ export function renderDocx({
    */
   const documentXml = doc.getZip().file('word/document.xml')?.asText();
   if (documentXml && documentXml.includes('@@FIG')) {
-    const numbered = numberFigures(documentXml, { label: figureLabel });
+    const numbered = numberFigures(documentXml, { label: figureLabel, tableLabel });
     doc.getZip().file('word/document.xml', numbered.xml);
   }
 
@@ -196,6 +226,37 @@ export function renderDocx({
    */
   if (provenance) parts.setCustomProperties(customPropertiesXml(provenance));
   parts.commit();
+
+  /*
+   * Is this a package Word will open?
+   *
+   * `docx-validate.js` was written after a report Word refused with "an error trying to open the
+   * file — check the file permissions, make sure there is sufficient free memory and disk space",
+   * none of which was the problem. And then it was only ever called from the test suites, which is
+   * to say: it ran against documents built from fixtures and never against one built from a real
+   * engagement's evidence, which is where the characters and the relationships come from.
+   *
+   * It checks the handful of package rules this app's own machinery is capable of breaking —
+   * content types, relationships pointing at parts that are not there, well-formedness, control
+   * characters XML forbids. Every one of those is something a screenshot's filename, a client's
+   * name or a pasted terminal escape can put in a document.
+   *
+   * **A problem fails the render.** Handing over a file the client cannot open, with an error
+   * message that sends them to check their disk space, is worse than saying so here — and the
+   * queue tells whoever asked, with the reason, rather than leaving them to find out. A false
+   * positive would be a bug in the validator, and the validator only knows about rules that are
+   * always true.
+   */
+  const broken = packageProblems(doc.getZip());
+  if (broken.length) {
+    log.error(`Refusing to hand over a broken document: ${broken.join(' / ')}`);
+    throw new HttpError(
+      500,
+      `The generated document is not a package Word can open — ${broken[0]}${
+        broken.length > 1 ? ` (and ${broken.length - 1} more)` : ''
+      }`
+    );
+  }
 
   return doc.getZip().generate({
     type: 'nodebuffer',

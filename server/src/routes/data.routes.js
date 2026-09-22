@@ -55,6 +55,115 @@ const identifier = z
  * with the client's name repeated. Declared before the CRUD router below so this
  * path is matched first.
  */
+/**
+ * How much of each collection there is, and how much of it is half-filled.
+ *
+ * The page it feeds used to be eight tabs with nothing on them: you learned there were no
+ * contacts by clicking Contacts. Counts on the rail answer that without a click, and are cheap —
+ * every one of these is a `countDocuments` against an index.
+ *
+ * The *gaps* are the half that is worth having. Reference data rots quietly: a client added in a
+ * hurry with no contact, a contact with no email, a company nobody has run an engagement for since
+ * it was created. None of it errors, none of it shows up anywhere, and all of it turns into a
+ * report with a blank where an address should be. Counting it is the only thing that makes it
+ * visible before a template does.
+ *
+ * Scoped like everything else here: companies you cannot see are not counted, and a count that
+ * included them would be a way of asking how many clients the firm has.
+ */
+router.get(
+  '/summary',
+  asyncHandler(async (req, res) => {
+    const companyScope = await visibleCompanyFilter(req.user);
+    const visible = await Company.find(companyScope).select('_id name shortName address').lean();
+    const ids = visible.map((company) => company._id);
+
+    /*
+     * Contacts are scoped the way the contacts list is scoped, not by company.
+     *
+     * `visibleClientFilter` also lets somebody see a contact they created themselves, which is how
+     * a contact with no company is reachable at all — and counting by company alone would have
+     * left those out of the total while the list under it showed them.
+     */
+    const [contacts, engagementsByCompany, contactsByCompany, ...simple] = await Promise.all([
+      Client.find(await visibleClientFilter(req.user)).select('company').lean(),
+      Audit.aggregate([
+        { $match: { deletedAt: null, company: { $in: ids } } },
+        { $group: { _id: '$company', n: { $sum: 1 } } },
+      ]),
+      Client.aggregate([
+        { $match: { company: { $in: ids } } },
+        { $group: { _id: '$company', n: { $sum: 1 } } },
+      ]),
+      AuditType.countDocuments(),
+      SectionDefinition.countDocuments(),
+      VulnerabilityType.countDocuments(),
+      VulnerabilityCategory.countDocuments(),
+      Language.countDocuments(),
+      CustomField.countDocuments(),
+    ]);
+
+    const [auditTypes, sections, vulnTypes, vulnCategories, languages, customFields] = simple;
+
+    const engagements = new Map(engagementsByCompany.map((row) => [String(row._id), row.n]));
+    const contactCount = new Map(contactsByCompany.map((row) => [String(row._id), row.n]));
+
+    /*
+     * Per company, the two numbers the list has never been able to show.
+     *
+     * Keyed by id and sent alongside rather than folded into the company records: the list is
+     * fetched by its own CRUD route, and widening that to carry counts would make every other
+     * consumer of it pay for a join it does not read.
+     */
+    const perCompany = Object.fromEntries(
+      visible.map((company) => [
+        String(company._id),
+        {
+          engagements: engagements.get(String(company._id)) ?? 0,
+          contacts: contactCount.get(String(company._id)) ?? 0,
+        },
+      ])
+    );
+
+    res.json({
+      counts: {
+        companies: visible.length,
+        clients: contacts.length,
+        'audit-types': auditTypes,
+        sections,
+        'vulnerability-types': vulnTypes,
+        'vulnerability-categories': vulnCategories,
+        languages,
+        'custom-fields': customFields,
+      },
+      /*
+       * What is missing, per collection, as a count and the words for it.
+       *
+       * Only where the absence actually costs something later. A section with no default body is
+       * not a gap — plenty are meant to be written from scratch — so it is not counted, and a
+       * number that included it would teach people to ignore the others.
+       */
+      gaps: {
+        companies: {
+          count: visible.filter((company) => !(contactCount.get(String(company._id)) ?? 0)).length,
+          label: 'with no contact',
+        },
+        /*
+         * Not "with no email": that field is required and unique, so the count would be zero
+         * forever and a number that is always zero teaches people to stop reading the others.
+         * A contact belonging to nobody is the state that actually happens, and it is the one
+         * that makes them useless — a report is addressed to a client's people, not to a list.
+         */
+        clients: {
+          count: contacts.filter((contact) => !contact.company).length,
+          label: 'not attached to a client',
+        },
+      },
+      perCompany,
+    });
+  })
+);
+
 router.get(
   '/companies/:id/overview',
   asyncHandler(async (req, res) => {
@@ -106,13 +215,15 @@ router.get(
           severityCounts[key] += 1;
           totals.severityCounts[key] += 1;
         }
-        const status = ['open', 'retesting', 'fixed'].includes(finding.remediationStatus)
+        const status = ['open', 'retesting', 'fixed', 'accepted'].includes(finding.remediationStatus)
           ? finding.remediationStatus
           : 'open';
         remediation[status] += 1;
         totals.remediation[status] += 1;
         totals.findings += 1;
-        if (status !== 'fixed' && (key === 'critical' || key === 'high')) totals.openSerious += 1;
+        if (!['fixed', 'accepted'].includes(status) && (key === 'critical' || key === 'high')) {
+          totals.openSerious += 1;
+        }
       }
 
       const checks = audit.testChecks ?? [];

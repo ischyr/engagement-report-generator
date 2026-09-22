@@ -30,6 +30,20 @@ npm run test:images   # the rules that scale a screenshot
 npm run test:keys     # what counts as a save keystroke
 npm run test:import   # reading a findings spreadsheet
 npm run test:figures  # captioning and reordering evidence
+npm run test:report-craft # what changed between two renders, and what preflight reads
+npm run test:page-break  # one finding, one page
+npm run test:numbering   # the order findings print in, and the numbers on them
+npm run test:opinion     # a second opinion on one finding, and the hours nobody logged
+npm run test:bulk-users  # deleting several accounts at once, and its guards
+npm run test:data-summary # what the Clients & data page counts, and who may know
+npm run test:notify-prefs # what reaches your bell, and that no sender can bypass it
+npm run test:media-access # evidence, renders and the pulse are refused to non-members
+npm run test:acceptance # accepted risks and per-host coverage
+npm run test:report-blocks # callouts, footnotes, page breaks and cross-references
+npm run test:audit-size # the readout that warns before a save can be refused
+npm run test:captions # numbered tables, and the lists at the front of the report
+npm run test:code-pane # colouring a code pane, counting its lines, keeping the marked one
+npm run test:table-caption # naming a table in the editor, without breaking the table
 npm run test:findings-rows # typing beside sixty findings re-renders none of them
 npm run test:enumeration-rows # and typing beside the enumeration tree re-renders none of it
 npm run test:library  # the library lists without its prose, and still holds every word
@@ -222,6 +236,27 @@ npm run make:api-token -- --help                     # and the other direction
 | **`server/storage/templates`** | Uploaded `.docx` templates |
 | **`server/storage/tmp`** | Scratch output from the smoke test and the scripts |
 | **`.env`** | Secrets. Not in the repository, and it should stay that way |
+
+## Building the indexes
+
+```bash
+npm run db:indexes -- --dry     # what is missing, and change nothing
+npm run db:indexes              # build it
+npm run db:indexes -- --prune   # and drop indexes no schema declares any more
+```
+
+**Run this after every upgrade.** Mongoose builds indexes as models are compiled, but only when
+`autoIndex` is on — and it is deliberately off in production, because an index build costs I/O and
+a process restarting under load is the worst moment to discover one is needed.
+
+The consequence, which nobody had written down, is that on a production instance the indexes were
+therefore built by nothing at all. Every index added since the instance was first stood up quietly
+did not exist, and the queries written expecting them did a collection scan. Nothing errors. The
+app is simply slower every month, in the places that grow.
+
+Dropping is opt-in. `--prune` removes indexes no schema declares any more, which is right and is
+also the expensive direction to undo — rebuilding a dropped index on a large collection is not a
+thing to discover you needed. Without it this only ever adds.
 
 ## Performance notes
 
@@ -462,6 +497,16 @@ npm run make:api-token -- --help                     # and the other direction
   deleted, and Express 5 ignores `maxAge` there, which would have changed the behaviour on the
   next upgrade. `clearing()` in `middleware/auth.js` strips the lifetime, and the suite asserts
   the header rather than the effect.
+
+- **The engagement now says how close it is to that ceiling.** Past 60% of the 16 MB a banner
+  appears on the engagement, naming the figure and which part of it is the largest — because "you
+  are at 71%" invites a shrug and "the enumeration steps are 8 MB of it" says what to do. Past 85%
+  it turns red. The thresholds are deliberately early: at 90% the work that has to move is weeks
+  old and moving it means editing somebody's write-ups.
+
+  The number comes from MongoDB itself — a `$bsonSize` aggregation rather than serialising the
+  engagement in the app to weigh it — so it is the same measure the database will refuse on, and
+  asking costs one cheap query rather than reading the document it is asking about.
 
 - **There is a ceiling on a write-up, and it is not the one you would guess.** An engagement is
   a single MongoDB record with a hard 16 MB limit, and three collections have already been moved

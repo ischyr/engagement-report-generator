@@ -31,6 +31,13 @@ The way a note becomes visible to anybody is to move it.
 Either way it becomes an ordinary note: on the record, in the activity log, and if it mentions a
 colleague they are told, exactly as if it had been typed there.
 
+## Labels
+
+Tag a note — *payload*, *sso*, *read later* — and the tags in use appear above the list as filters
+with a count each. They are suggested from your own notes and nobody else's, because a scratchpad's
+categories are personal and a shared vocabulary here would be somebody deciding in advance what you
+are allowed to find useful.
+
 ## Searching
 
 The box searches titles, body text and tags across everything, in the browser — so it works on the

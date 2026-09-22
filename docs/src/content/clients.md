@@ -17,6 +17,31 @@ A company carries:
 
 A client cannot be deleted while anything still points at it. The refusal names what.
 
+## The page itself
+
+**Clients & data** is eight collections down the left with a count each, and the one you pick
+filling the rest of the page. Across the top: how many clients and contacts there are, how many
+entries the taxonomies hold between them, and what the evidence weighs.
+
+### What it says is missing
+
+Reference data does not go wrong by being absent. It goes wrong by being half-filled — a client
+added in a hurry with no contact on it, a contact belonging to no client — and none of that errors
+anywhere until a report has a blank where an address should be.
+
+So a collection with something missing carries an amber mark on the rail with the count, and the
+panel gets a button that narrows the list to exactly those rows. The count and the filter are the
+same rule, deliberately: a filter that hid a row the count promised would read as the page being
+broken rather than the data being fine.
+
+### What a client's row shows
+
+Two numbers that were nowhere on this page before: how many engagements that client has, and how
+many contacts. Both are the reason somebody opens a client, and a client with no contacts says
+**none** rather than 0, because it is a thing to fix rather than a quantity.
+
+Adding and editing are unchanged — the same dialog with the same fields.
+
 ## The relationship, in order
 
 Every client has a timeline: proposals raised, what was won and why, engagements, reports actually

@@ -29,6 +29,7 @@ import {
 
 import { api } from '../../lib/api.js';
 import ImportFindingsDialog from './ImportFindingsDialog.jsx';
+import RiskAcceptanceDialog from './RiskAcceptanceDialog.jsx';
 import AssistantAction from '../assistant/AssistantAction.jsx';
 import { listKey, saveShortcutLabel } from '../../lib/keys.js';
 import TagPicker from '../ui/TagPicker.jsx';
@@ -38,7 +39,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
 import { useUrlState } from '../../hooks/useUrlState.js';
 import { useUnsaved, useUnsavedWork } from '../../context/UnsavedContext.jsx';
-import { calculateCvss, CVSS_DEFAULT_VECTOR } from '../../lib/cvss.js';
+import { calculateCvss, findingSortScore, CVSS_DEFAULT_VECTOR } from '../../lib/cvss.js';
 import {
   COMPLEXITY_LABELS,
   PRIORITY_LABELS,
@@ -70,6 +71,7 @@ import { RichTextEditor } from '../editor/LazyRichTextEditor.jsx';
 import CollaborativeField from '../editor/CollaborativeField.jsx';
 import CollaborativeInput from '../editor/CollaborativeInput.jsx';
 import FindingComments from './FindingComments.jsx';
+import SecondOpinion from './SecondOpinion.jsx';
 import FindingTimeline from './FindingTimeline.jsx';
 import TransferFindingCard from './TransferFindingCard.jsx';
 import BulkFindingBar from './BulkFindingBar.jsx';
@@ -98,6 +100,16 @@ const REMEDIATION_STATUS_OPTIONS = [
   { value: 'open', label: 'Not fixed' },
   { value: 'retesting', label: 'Retesting' },
   { value: 'fixed', label: 'Fixed' },
+  /*
+   * "Risk accepted", not "Accepted" — on its own that reads as though somebody approved the
+   * finding. What was accepted is the risk of leaving it in place.
+   *
+   * Choosing it opens a dialog rather than saving straight away: the server refuses the status
+   * without a reason and the name of whoever at the client decided, and it is right to refuse —
+   * a status that says a client accepted something and cannot say who is the sentence a client
+   * disputes a year later.
+   */
+  { value: 'accepted', label: 'Risk accepted' },
 ];
 
 /**
@@ -456,6 +468,14 @@ function FindingEditor({
   /** Swaps the five editors for what the report will make of them. */
   const [previewing, setPreviewing] = useState(false);
   const [mergePicker, setMergePicker] = useState(false);
+  /*
+   * The status to fall back to if the acceptance dialog is cancelled.
+   *
+   * Holding the previous status rather than a boolean: the dropdown has already moved by the time
+   * this opens, so cancelling has to put it back to whatever it was — and "whatever it was" is not
+   * always open.
+   */
+  const [accepting, setAccepting] = useState(null);
   /**
    * Where an insert from the evidence bin lands.
    *
@@ -849,12 +869,55 @@ function FindingEditor({
           />
           <Select
             label="Remediation status"
-            hint="Drives the fixed / retesting / not-fixed counters in the report."
+            hint="Drives the counters in the report. Accepting a risk asks who decided and why."
             value={form.remediationStatus ?? 'open'}
             disabled={!mayWrite}
-            onChange={(e) => set({ remediationStatus: e.target.value })}
+            onChange={(e) => {
+              /*
+               * Accepting is the one status that needs more than a click.
+               *
+               * The dropdown moves the moment it is used, so choosing "Risk accepted" and then
+               * cancelling the dialog has to put it back — otherwise the form is left claiming an
+               * acceptance the server will refuse to save, and the refusal arrives much later at
+               * whatever the operator next tried to change.
+               */
+              if (e.target.value === 'accepted') {
+                setAccepting(form.remediationStatus ?? 'open');
+                return;
+              }
+              set({ remediationStatus: e.target.value });
+            }}
             options={REMEDIATION_STATUS_OPTIONS}
           />
+          {form.remediationStatus === 'accepted' && form.riskAcceptance?.reason ? (
+            <div className="sm:col-span-2 rounded-lg border border-line-soft bg-surface/50 px-3.5 py-3">
+              <p className="text-xs leading-relaxed text-fg-muted">
+                <span className="font-medium text-fg">
+                  {form.riskAcceptance.acceptedBy || 'The client'}
+                </span>{' '}
+                accepted this risk
+                {form.riskAcceptance.acceptedAt
+                  ? ` on ${formatDate(form.riskAcceptance.acceptedAt)}`
+                  : ''}
+                : {form.riskAcceptance.reason}
+              </p>
+              {form.riskAcceptance.reviewOn ? (
+                <p className="mt-1.5 text-[0.6875rem] text-fg-subtle">
+                  To be looked at again on {formatDate(form.riskAcceptance.reviewOn)}.
+                </p>
+              ) : null}
+              {mayWrite ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => setAccepting(form.remediationStatus)}
+                >
+                  Edit the acceptance
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {/*
             Across both columns: a row of chips reads as a row, and half a row of them next to a
             dropdown reads as a mistake.
@@ -1151,6 +1214,13 @@ function FindingEditor({
                   /* So a sentence in the description can point at a screenshot in the proof of concept. */
                   siblingFields={prose}
                   /*
+                    And at another finding. `siblings` is already loaded for the merge dialog, so
+                    this costs nothing — and the picker excludes whichever finding is open, because
+                    a reference from a finding to itself is only ever a mistake.
+                  */
+                  findings={siblings}
+                  excludeFinding={form._id}
+                  /*
                     Only on the two fields that name assets. The affected-assets field is what this
                     is for; the description gets it because "and the same on these nine hosts" is
                     usually written there. A remediation paragraph listing IP addresses is not a
@@ -1329,6 +1399,13 @@ function FindingEditor({
         </Card>
       ) : null}
 
+      {/*
+        Above the comments, because an answer becomes one: the question is what starts the thread,
+        and putting it underneath would have somebody scroll past the answer to find what it was
+        an answer to.
+      */}
+      <SecondOpinion auditId={auditId} finding={finding} onChanged={onReload} />
+
       <FindingComments auditId={auditId} finding={finding} onChanged={onReload} />
 
       {editable ? (
@@ -1370,6 +1447,23 @@ function FindingEditor({
         * A three-way merge rather than a choice between two whole versions — see ConflictMerge. The
         * base is the version this editor loaded, which is exactly the common ancestor it needs.
         */}
+      {/*
+        Accepting a risk, which the server refuses without a reason and a name.
+
+        `set` rather than a save of its own: the acceptance lands as an ordinary unsaved change on
+        the form, so it goes in with whatever else is being edited and is undone the same way. The
+        dialog's job is to collect the four fields, not to own the write.
+      */}
+      <RiskAcceptanceDialog
+        open={accepting !== null}
+        finding={form}
+        onClose={() => setAccepting(null)}
+        onSave={(patch) => {
+          set(patch);
+          setAccepting(null);
+        }}
+      />
+
       {mergePicker ? (
         <MergeFindingDialog
           open
@@ -1928,11 +2022,17 @@ export default function FindingsTab({ audit, editable, onReload, onPatch, onPatc
     const list = [...(audit.findings ?? [])].map((finding) => ({
       ...finding,
       _cvss: calculateCvss(finding.cvssv3),
+      /*
+       * Not the vector's score. A finding argued down from Critical to Medium still scores 9.1,
+       * and sorting on that put a row badged "Medium" above every real High — while the report,
+       * which has always sorted on the overridden severity, printed it in the right place. The
+       * list is what people renumber from, so the two disagreeing is how a report ends up
+       * numbered VULN-03, VULN-01, VULN-05.
+       */
+      _sortScore: findingSortScore(finding),
     }));
     if (audit.sortFindings !== false) {
-      list.sort(
-        (a, b) => (b._cvss.baseScore ?? -1) - (a._cvss.baseScore ?? -1) || a.title.localeCompare(b.title)
-      );
+      list.sort((a, b) => b._sortScore - a._sortScore || a.title.localeCompare(b.title));
     } else {
       list.sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
     }

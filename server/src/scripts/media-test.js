@@ -17,9 +17,13 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import mongoose from 'mongoose';
 import zlib from 'node:zlib';
 import PizZip from 'pizzip';
+
+import env from '../config/env.js';
 
 import { connectDatabase, disconnectDatabase } from '../config/db.js';
 import { createApp } from '../app.js';
@@ -257,28 +261,88 @@ async function main() {
     log.info('Reports');
 
     const settings = await Settings.getSettings();
-    const wordTemplate = await Template.findOne({ kind: { $ne: 'html' } });
-    if (wordTemplate) {
+
+    /**
+     * Which templates print the proof of concept, and which deliberately do not.
+     *
+     * This used to take whichever Word template came back first and assert that the screenshots
+     * were embedded. The template it happened to pick was the **NDA**, which prints no rich field
+     * at all — so the check was passing because every proof-of-concept screenshot was being written
+     * into a non-disclosure agreement, and calling that success.
+     *
+     * The two halves are now separate questions, because they are: a template that asks for the
+     * evidence gets it, and a template that does not must not carry it anyway.
+     */
+    const wordTemplates = await Template.find({ kind: { $ne: 'html' } });
+    const readsTags = (template) => {
+      try {
+        const xml = new PizZip(
+          fs.readFileSync(path.join(env.storage.templates, template.filename))
+        )
+          .file('word/document.xml')
+          .asText();
+        return /\{\{@rich\.poc\}\}/.test(xml);
+      } catch {
+        return null;
+      }
+    };
+    const prints = wordTemplates.find((t) => readsTags(t) === true);
+    const omits = wordTemplates.find((t) => readsTags(t) === false);
+
+    const mediaPartsOf = (buffer) =>
+      Object.keys(new PizZip(buffer).files).filter((name) => /^word\/media\//.test(name));
+
+    if (prints) {
       const populated = await Audit.findById(auditId).populate('template');
-      const report = await generateReport({ audit: populated, template: wordTemplate, settings });
+      const report = await generateReport({ audit: populated, template: prints, settings });
 
       // Counted rather than weighed: a .docx is a zip, and these synthetic PNGs are
       // runs of one byte, so 24 MB of them deflates to almost nothing.
-      const zip = new PizZip(report.buffer);
-      const embedded = Object.keys(zip.files).filter((name) => /^word\/media\//.test(name));
+      const embedded = mediaPartsOf(report.buffer);
       check(
-        `the .docx embeds all ${SHOTS} stored screenshots`,
+        `a template that prints the proof of concept embeds all ${SHOTS} screenshots (${prints.name})`,
         embedded.length >= SHOTS,
         `${embedded.length} media part(s): ${embedded.slice(0, 3).join(', ')}`
       );
 
-      const documentXml = zip.file('word/document.xml').asText();
+      const documentXml = new PizZip(report.buffer).file('word/document.xml').asText();
       check(
         'and none of them fell back to a "missing image" marker',
         !documentXml.includes('image missing from storage')
       );
+
+      /* Every picture in the package is one the document actually points at. */
+      const rels = new PizZip(report.buffer).file('word/_rels/document.xml.rels').asText();
+      const unreferenced = [...rels.matchAll(/Id="(rId\d+)"[^>]*Target="media\/([^"]+)"/g)].filter(
+        ([, id]) => !documentXml.includes(`"${id}"`)
+      );
+      check(
+        'and nothing is in the package that the document never references',
+        unreferenced.length === 0,
+        unreferenced.map(([, id, target]) => `${id}→${target}`).join(', ')
+      );
     } else {
-      log.warn('  skip  .docx render — no Word template on this instance (run npm run seed)');
+      log.warn('  skip  .docx render — no Word template prints {{@rich.poc}} (run npm run seed)');
+    }
+
+    /*
+     * The half that was inverted.
+     *
+     * An NDA, a permission to attack and a proposal print no rich field, and go to a client's legal
+     * or management contact — often before any testing has happened. Evidence inside one is
+     * invisible in Word and in the file all the same.
+     */
+    if (omits) {
+      const populated = await Audit.findById(auditId).populate('template');
+      const paperwork = await generateReport({ audit: populated, template: omits, settings });
+      const embedded = mediaPartsOf(paperwork.buffer);
+      check(
+        `a template that prints no evidence carries none of it (${omits.name})`,
+        embedded.length === 0,
+        `${embedded.length} media part(s) in a document that shows none: ${embedded.join(', ')}`
+      );
+    } else {
+      log.warn('  skip  the negative case — every Word template here prints the proof of concept');
     }
 
     const htmlData = buildReportData(
@@ -427,6 +491,48 @@ async function main() {
 
     await EnumerationBody.deleteMany({ audit: auditId });
     await deleteMedia(enumShot.id);
+
+    /*
+     * And the scratchpad, which is the one place evidence lives that belongs to no engagement.
+     *
+     * A screenshot pasted into a private note is uploaded with no owning engagement — the editor
+     * posts to `/media` without one — so the only thing that refers to it is the note's own HTML.
+     * The sweep did not read that, which made "somebody ran media:gc" the way a private note lost
+     * its pictures. Stored here *without* an audit id, deliberately: with one, the check would
+     * pass for the wrong reason.
+     */
+    const { Scratch } = await import('../models/scratch.model.js');
+    const scratchShot = await saveMedia({
+      buffer: makePng(4_000, 91),
+      filename: 'zz-scratchpad-shot.png',
+      contentType: 'image/png',
+    });
+    const beforeNote = await collectOrphanMedia({ graceMs: 0, dryRun: true });
+    check(
+      'a screenshot belonging to no engagement and no note is an orphan',
+      beforeNote.orphans.some((file) => file._id.toString() === String(scratchShot.id)),
+      'so the check below is not passing for the wrong reason'
+    );
+
+    const note = await Scratch.create({
+      user: user._id,
+      title: 'The payload that worked',
+      content: `<p>Keep this.</p><img src="/api/media/${scratchShot.id}" alt="">`,
+    });
+    const afterNote = await collectOrphanMedia({ graceMs: 0, dryRun: true });
+    check(
+      'and is left alone once a scratchpad note refers to it',
+      !afterNote.orphans.some((file) => file._id.toString() === String(scratchShot.id)),
+      'the sweep would have deleted a private note’s evidence'
+    );
+
+    await Scratch.deleteOne({ _id: note._id });
+    const afterDelete = await collectOrphanMedia({ graceMs: 0, dryRun: true });
+    check(
+      'and collectable again once the note is gone',
+      afterDelete.orphans.some((file) => file._id.toString() === String(scratchShot.id))
+    );
+    await deleteMedia(scratchShot.id);
 
     const graced = await collectOrphanMedia({ dryRun: true });
     check(

@@ -202,7 +202,12 @@ export function clientView(link, cvssColors = {}) {
          */
         description: stripImages(sanitizeHtml(finding.description ?? '')).html,
         remediation: stripImages(sanitizeHtml(finding.remediation ?? '')).html,
-        status: ['open', 'retesting', 'fixed'].includes(finding.remediationStatus)
+        /*
+         * `accepted` reaches the client's own page, and it should: they are the ones who accepted
+         * it. Leaving it out would show them an outstanding finding they have already decided
+         * about, and invite them to explain themselves twice.
+         */
+        status: ['open', 'retesting', 'fixed', 'accepted'].includes(finding.remediationStatus)
           ? finding.remediationStatus
           : 'open',
         /**
@@ -261,8 +266,10 @@ export function clientView(link, cvssColors = {}) {
     findings,
     counts: {
       total: findings.length,
-      open: findings.filter((finding) => finding.status !== 'fixed').length,
+      /* Neither fixed nor accepted: the ones this page is actually asking them about. */
+      open: findings.filter((finding) => !['fixed', 'accepted'].includes(finding.status)).length,
       fixed: findings.filter((finding) => finding.status === 'fixed').length,
+      accepted: findings.filter((finding) => finding.status === 'accepted').length,
     },
     allowUpdates: link.allowUpdates,
     /** Whether the page offers to attach a screenshot. Off unless somebody allowed it. */
@@ -488,7 +495,15 @@ export function applyClientStatus(audit, findingId, fixed, label = '', note = ''
   if (!finding) throw notFound('That finding is not on this report');
 
   const from = finding.remediationStatus ?? 'open';
-  const to = fixed ? 'fixed' : 'open';
+  /*
+   * Unticking returns a finding to where it was, which is not always `open`.
+   *
+   * A risk the client formally accepted and then unticks has not become an ordinary outstanding
+   * issue — the acceptance still stands, and moving it to `open` would erase a decision somebody
+   * signed for with a tick on a web page. Ticking it *is* allowed and is a good outcome: they
+   * accepted the risk and then fixed it anyway.
+   */
+  const to = fixed ? 'fixed' : from === 'accepted' ? 'accepted' : 'open';
 
   /*
    * A note on its own is a change worth keeping.

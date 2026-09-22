@@ -1,6 +1,8 @@
 import Paragraph from '@tiptap/extension-paragraph';
 import CodeBlock from '@tiptap/extension-code-block';
 
+import { ParagraphWithTableCaption } from './TableCaption.js';
+
 /**
  * Paragraphs and code blocks that keep the `class` they were given.
  *
@@ -26,17 +28,48 @@ const keepClass = {
   },
 };
 
-export const ParagraphWithClass = Paragraph.extend(keepClass);
+/**
+ * The paragraph carries both: the `class` it was pasted with, and the mark that says it is a
+ * table's caption.
+ *
+ * Composed here rather than as two extensions of the same node, because TipTap resolves one
+ * extension per node name — registering a second `paragraph` would replace the first and quietly
+ * drop whichever set of attributes lost.
+ */
+export const ParagraphWithClass = Paragraph.extend({
+  addAttributes() {
+    return {
+      ...keepClass.addAttributes.call(this),
+      ...ParagraphWithTableCaption.addAttributes.call({ parent: () => ({}) }),
+    };
+  },
+});
 
 /**
- * The code block keeps its own class as well as the one on the node.
+ * The code block keeps its own class as well as the one on the node, and remembers which of its
+ * lines somebody pointed at.
  *
  * `engy-code-block` comes from the editor's configuration and styles every block; a pasted
  * `http-request` says which kind this one is. Losing either would be a regression, so they are
  * merged rather than one replacing the other.
+ *
+ * `markLines` is a comma-separated list of line numbers, rendered as `data-mark-lines` on the
+ * `<pre>` — the attribute the .docx converter has read from enumeration output panes all along.
+ * The write-up is where a reader most needs telling which line is the payload, and it was the one
+ * pane that could not say.
  */
 export const CodeBlockWithClass = CodeBlock.extend({
-  ...keepClass,
+  addAttributes() {
+    return {
+      ...keepClass.addAttributes.call(this),
+      markLines: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-mark-lines') || null,
+        renderHTML: (attributes) =>
+          attributes.markLines ? { 'data-mark-lines': attributes.markLines } : {},
+      },
+    };
+  },
   renderHTML({ node, HTMLAttributes }) {
     const configured = this.options.HTMLAttributes?.class ?? '';
     const own = node.attrs.class ?? '';

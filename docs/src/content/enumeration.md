@@ -166,9 +166,27 @@ Click a **line number** in the output pane. The line is marked, and a note goes 
 > `187  https://staging.acme.example [200] [nginx]` — *unauthenticated admin panel*
 
 Marked lines are listed above the pane and print in the report as a list under the output, each with
-the line's own text. That last part is what makes them work: the note reaches the reader **even when
-the pane above it was capped**, so marking is worth doing on exactly the sweeps that are too long to
-print.
+the line's own text.
+
+**And the line itself reaches the document.** A step set to print its first forty lines used to drop
+the line you had gone to the trouble of marking at 187 — which is exactly backwards, since marking a
+line is you saying *this one*. Now the cap keeps every marked line whatever its number, and the pane
+says plainly what it skipped to get there:
+
+```
+  1  https://acme.example [200] [nginx]
+  2  https://www.acme.example [301] [nginx]
+ …   … 146 lines not printed
+187  https://staging.acme.example [200] [nginx]
+ …   … 213 more lines not printed
+```
+
+The marked line is picked out in the accent colour, in the pane and in the gutter beside it, so the
+note under the output and the line it is about are visibly the same line.
+
+The line numbers appear whether or not you have [turned them on](/settings) — a pane that jumps from
+line 2 to line 187 without saying so would be claiming those lines ran one after another, and the
+numbers are how it stops being a claim.
 
 > [!NOTE]
 > Enumeration gets re-run, and the second sweep is never in the same order. A note remembers both the

@@ -80,6 +80,19 @@ const settingsSchema = new mongoose.Schema(
         /** The word in front of the number. "Figure", "Screenshot", "Fig.", or another language. */
         figureLabel: { type: String, default: 'Figure', trim: true, maxlength: 30 },
         /**
+         * Whether a captioned table is numbered — "Table 3 — Hosts in scope".
+         *
+         * Its own setting rather than a share of `figureNumbering`, because the two have different
+         * answers: a house whose template numbers its own figures may still want tables numbered,
+         * and a report with three screenshots and eleven tables cares about this one far more.
+         *
+         * Only tables somebody captioned are numbered, so turning this on does not put "Table 14"
+         * on the two-row comparison inside a paragraph.
+         */
+        tableNumbering: { type: Boolean, default: true },
+        /** The word in front of a table's number. Word's own `Table` counter is used regardless. */
+        tableLabel: { type: String, default: 'Table', trim: true, maxlength: 30 },
+        /**
          * How code blocks are drawn: `terminal` a dark console pane, `light` a
          * pale box, `template` the document's own CodeBlock style if it has one.
          */
@@ -88,10 +101,41 @@ const settingsSchema = new mongoose.Schema(
           enum: ['terminal', 'light', 'template'],
           default: 'terminal',
         },
+        /**
+         * Whether a code pane is coloured by what its text is.
+         *
+         * On by default: it adds colour and moves nothing — every character stays where it was, in
+         * the same font at the same size — so the worst case is a pane somebody finds busy. Off for
+         * a house style that wants one ink, and for the reader who prints in greyscale and would
+         * rather have contrast than hue. Ignored by the `template` theme, which exists precisely to
+         * let the document's own `CodeBlock` style decide.
+         */
+        codeHighlight: { type: Boolean, default: true },
+        /**
+         * Whether a code pane carries a line-number column.
+         *
+         * Off by default, and for a reason the other presentation settings do not have: a reader
+         * who selects a pane in Word to copy a command out of it gets the numbers too. Worth paying
+         * when the prose says "line 14"; not worth paying for a three-line curl.
+         *
+         * A pane whose lines are not contiguous — the first forty of a sweep, plus the one somebody
+         * marked at 187 — numbers itself regardless of this setting, because without the numbers it
+         * would be claiming those lines ran one after another.
+         */
+        codeLineNumbers: { type: Boolean, default: false },
         dateFormat: { type: String, default: 'yyyy-MM-dd' },
         /** Prefix used when auto-numbering findings, e.g. VULN-01. */
         findingIdPrefix: { type: String, default: '' },
         extendCvssTemporalEnvironment: { type: Boolean, default: false },
+        /**
+         * Whether every finding starts at the top of a page.
+         *
+         * A layout decision that belongs to the firm rather than to the template, because the firm
+         * is who changes its mind about it — and the alternative is editing every template on the
+         * instance and remembering to do it to the next one. Applied to the template before it is
+         * filled; see `ooxml/finding-page-break.js` for why it cannot be done anywhere else.
+         */
+        findingPerPage: { type: Boolean, default: false },
       },
       private: {
         imageBorder: { type: Boolean, default: false },

@@ -186,10 +186,15 @@ const settingsSchema = z
             captionStyle: z.string().trim().max(60).optional(),
             figureNumbering: z.boolean().optional(),
             figureLabel: z.string().trim().max(30).optional(),
+            tableNumbering: z.boolean().optional(),
+            tableLabel: z.string().trim().max(30).optional(),
             codeBlockTheme: z.enum(['terminal', 'light', 'template']).optional(),
+            codeHighlight: z.boolean().optional(),
+            codeLineNumbers: z.boolean().optional(),
             dateFormat: z.string().trim().max(40).optional(),
             findingIdPrefix: z.string().trim().max(20).optional(),
             extendCvssTemporalEnvironment: z.boolean().optional(),
+            findingPerPage: z.boolean().optional(),
           })
           .optional(),
         private: z

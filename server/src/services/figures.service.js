@@ -150,7 +150,10 @@ export function danglingReferences(record, fields) {
  * gains instead is a real link: a reference is an `<a href="#fig-…">`, so clicking "Figure 7"
  * goes there.
  */
-export function numberFiguresHtml(html, { label = 'Figure' } = {}) {
+export function numberFiguresHtml(
+  html,
+  { label = 'Figure', tableLabel = 'Table', numberFigures = true, numberTables = true } = {}
+) {
   const source = String(html ?? '');
 
   /*
@@ -184,102 +187,143 @@ export function numberFiguresHtml(html, { label = 'Figure' } = {}) {
    * again and caption it twice. The finished figures are held aside behind a placeholder no
    * document can contain, and put back before the numbering walk.
    */
+  /*
+   * Hoisted out of the figure work below, because the two halves are independently switchable: an
+   * instance whose template numbers its own figures can still want its tables numbered, and the
+   * other way round. Both counters are Word's own arrangement — see `figure-fields.js`.
+   */
+  let out = source;
+  const numbers = new Map();
+  let referenced = 0;
+  const missing = [];
+
   const held = [];
-  let out = source.replace(/<figure\b([^>]*)>([\s\S]*?)<\/figure>/gi, (whole, attrs, inner) => {
-    if (NOT_EVIDENCE.test(inner)) return whole;
-    const media = MEDIA_ID.exec(inner)?.[1]?.toLowerCase() ?? '';
-    const anchor = media ? ` id="fig-${media}"` : '';
+  if (numberFigures) {
+    out = out.replace(/<figure\b([^>]*)>([\s\S]*?)<\/figure>/gi, (whole, attrs, inner) => {
+      if (NOT_EVIDENCE.test(inner)) return whole;
+      const media = MEDIA_ID.exec(inner)?.[1]?.toLowerCase() ?? '';
+      const anchor = media ? ` id="fig-${media}"` : '';
 
-    const body = /<figcaption([^>]*)>([\s\S]*?)<\/figcaption>/i.test(inner)
-      ? inner.replace(
-          /<figcaption([^>]*)>([\s\S]*?)<\/figcaption>/i,
-          (_all, capAttrs, text) =>
-            `<figcaption${capAttrs}>${mark(media, text, isStill(inner))}</figcaption>`
-        )
-      : `${inner}<figcaption>${mark(media, '', isStill(inner))}</figcaption>`;
+      const body = /<figcaption([^>]*)>([\s\S]*?)<\/figcaption>/i.test(inner)
+        ? inner.replace(
+            /<figcaption([^>]*)>([\s\S]*?)<\/figcaption>/i,
+            (_all, capAttrs, text) =>
+              `<figcaption${capAttrs}>${mark(media, text, isStill(inner))}</figcaption>`
+          )
+        : `${inner}<figcaption>${mark(media, '', isStill(inner))}</figcaption>`;
 
-    held.push(`<figure${attrs}${anchor}>${body}</figure>`);
-    return `\u0000FIG${held.length - 1}\u0000`;
-  });
+      held.push(`<figure${attrs}${anchor}>${body}</figure>`);
+      return `\u0000FIG${held.length - 1}\u0000`;
+    });
 
-  /*
-   * A paragraph that is nothing but pictures is evidence, and evidence gets numbered — this is how
-   * a screenshot pasted straight into a write-up becomes "Figure 12" without anybody typing a
-   * caption. A picture *inside* a sentence is left alone: it is an icon in the prose, not a figure,
-   * and numbering it would interrupt the sentence it belongs to.
-   */
-  out = out.replace(/<(p|div)\b([^>]*)>\s*(?:<img\b[^>]*>\s*)+<\/\1>/gi, (whole, tag, attrs) => {
-    const images = whole.match(/<img\b[^>]*>/gi) ?? [];
-    return images
-      .map((img) => {
-        const media = MEDIA_ID.exec(attribute(img, 'src'))?.[1]?.toLowerCase() ?? '';
-        /* Not stored evidence: it will not travel, so it is not a figure either. */
-        if (!media || NOT_EVIDENCE.test(img)) return `<${tag}${attrs}>${img}</${tag}>`;
-        return `<figure id="fig-${media}">${img}<figcaption>${mark(
-          media,
-          '',
-          isStill(img)
-        )}</figcaption></figure>`;
-      })
-      .join('');
-  });
-
-  /*
-   * Everything else: a screenshot after a label, one in a list item, one in a table cell.
-   *
-   * The caption goes at the end of the block that holds the picture rather than immediately after
-   * the picture itself, so it matches what the Word path does — there a caption is a paragraph, and
-   * a paragraph cannot start in the middle of a sentence. Two pictures in one block get two
-   * captions, in order, at the end of it.
-   */
-  out = out.replace(
-    /<(p|li|td|th|div)\b([^>]*)>((?:(?!<\1[\s>])[\s\S])*?)<\/\1>/gi,
-    (whole, tag, attrs, inner) => {
-      const images = (inner.match(/<img\b[^>]*>/gi) ?? []).filter(
-        (img) => MEDIA_ID.test(attribute(img, 'src')) && !NOT_EVIDENCE.test(img)
-      );
-      if (!images.length) return whole;
-      const captions = images
+    /*
+     * A paragraph that is nothing but pictures is evidence, and evidence gets numbered — this is how
+     * a screenshot pasted straight into a write-up becomes "Figure 12" without anybody typing a
+     * caption. A picture *inside* a sentence is left alone: it is an icon in the prose, not a figure,
+     * and numbering it would interrupt the sentence it belongs to.
+     */
+    out = out.replace(/<(p|div)\b([^>]*)>\s*(?:<img\b[^>]*>\s*)+<\/\1>/gi, (whole, tag, attrs) => {
+      const images = whole.match(/<img\b[^>]*>/gi) ?? [];
+      return images
         .map((img) => {
-          const media = MEDIA_ID.exec(attribute(img, 'src'))[1].toLowerCase();
-          return `<span class="engy-figure-loose" id="fig-${media}">${mark(
+          const media = MEDIA_ID.exec(attribute(img, 'src'))?.[1]?.toLowerCase() ?? '';
+          /* Not stored evidence: it will not travel, so it is not a figure either. */
+          if (!media || NOT_EVIDENCE.test(img)) return `<${tag}${attrs}>${img}</${tag}>`;
+          return `<figure id="fig-${media}">${img}<figcaption>${mark(
             media,
             '',
             isStill(img)
-          )}</span>`;
+          )}</figcaption></figure>`;
         })
         .join('');
-      return `<${tag}${attrs}>${inner}${captions}</${tag}>`;
-    }
-  );
+    });
 
-  out = out.replace(/\u0000FIG(\d+)\u0000/g, (_whole, index) => held[Number(index)]);
+    /*
+     * Everything else: a screenshot after a label, one in a list item, one in a table cell.
+     *
+     * The caption goes at the end of the block that holds the picture rather than immediately after
+     * the picture itself, so it matches what the Word path does — there a caption is a paragraph, and
+     * a paragraph cannot start in the middle of a sentence. Two pictures in one block get two
+     * captions, in order, at the end of it.
+     */
+    out = out.replace(
+      /<(p|li|td|th|div)\b([^>]*)>((?:(?!<\1[\s>])[\s\S])*?)<\/\1>/gi,
+      (whole, tag, attrs, inner) => {
+        const images = (inner.match(/<img\b[^>]*>/gi) ?? []).filter(
+          (img) => MEDIA_ID.test(attribute(img, 'src')) && !NOT_EVIDENCE.test(img)
+        );
+        if (!images.length) return whole;
+        const captions = images
+          .map((img) => {
+            const media = MEDIA_ID.exec(attribute(img, 'src'))[1].toLowerCase();
+            return `<span class="engy-figure-loose" id="fig-${media}">${mark(
+              media,
+              '',
+              isStill(img)
+            )}</span>`;
+          })
+          .join('');
+        return `<${tag}${attrs}>${inner}${captions}</${tag}>`;
+      }
+    );
 
-  /* Now, and only now, document order is knowable: it is the order these marks appear. */
-  const numbers = new Map();
-  out = out.replace(
-    /<span class="engy-figure-number" data-fignum="([^"]*)"><\/span>/g,
-    (_whole, media) => {
-      const key = media || `anonymous-${numbers.size + 1}`;
-      if (!numbers.has(key)) numbers.set(key, numbers.size + 1);
-      return `<span class="engy-figure-number">${encode(label)} ${numbers.get(key)}</span>`;
-    }
-  );
+    out = out.replace(/\u0000FIG(\d+)\u0000/g, (_whole, index) => held[Number(index)]);
 
-  let referenced = 0;
-  const missing = [];
-  out = out.replace(REFERENCE, (whole, media, text) => {
-    const number = numbers.get(String(media).toLowerCase());
-    if (!number) {
-      missing.push(String(media).toLowerCase());
-      /* Visible, like the Word path: a sentence that quietly lost its reference reads as complete. */
-      return '<span class="engy-figure-missing">(figure removed)</span>';
-    }
-    referenced += 1;
-    return `<a class="engy-figure-ref" href="#fig-${media}">${encode(label)} ${number}</a>`;
-  });
+    /* Now, and only now, document order is knowable: it is the order these marks appear. */
+    out = out.replace(
+      /<span class="engy-figure-number" data-fignum="([^"]*)"><\/span>/g,
+      (_whole, media) => {
+        const key = media || `anonymous-${numbers.size + 1}`;
+        if (!numbers.has(key)) numbers.set(key, numbers.size + 1);
+        return `<span class="engy-figure-number">${encode(label)} ${numbers.get(key)}</span>`;
+      }
+    );
 
-  return { html: out, count: numbers.size, referenced, missing };
+    out = out.replace(REFERENCE, (whole, media, text) => {
+      const number = numbers.get(String(media).toLowerCase());
+      if (!number) {
+        missing.push(String(media).toLowerCase());
+        /* Visible, like the Word path: a sentence that quietly lost its reference reads as complete. */
+        return '<span class="engy-figure-missing">(figure removed)</span>';
+      }
+      referenced += 1;
+      return `<a class="engy-figure-ref" href="#fig-${media}">${encode(label)} ${number}</a>`;
+    });
+  }
+
+  /*
+   * And the tables, on their own counter.
+   *
+   * Here rather than left to the Word path alone, because the two deliverables have to agree: a
+   * client sent the .docx reads "Table 3", a client sent the page reads nothing, and the sentence
+   * pointing at it is right in one file and wrong in the other. Same argument as `data-video` in
+   * the sanitiser, and the same failure.
+   *
+   * Two shapes, because there are two ways a table gets named — a real `<caption>`, which is what
+   * a pasted table brings, and the paragraph above it, which is what the editor writes. See
+   * `TableCaption.js` for why the editor cannot write the first one.
+   *
+   * A table nobody captioned is not numbered, exactly as in the document: a write-up full of
+   * two-row comparisons inside sentences should not come out full of "Table 14".
+   */
+  let tables = 0;
+  if (numberTables) {
+    out = out.replace(
+      /(<p\b[^>]*\bdata-table-caption\b[^>]*>)([\s\S]*?)(<\/p>)(?=\s*<table\b)|(<caption\b[^>]*>)([\s\S]*?)(<\/caption>)/gi,
+      (_whole, pOpen, pText, pClose, cOpen, cText, cClose) => {
+        const open = pOpen ?? cOpen;
+        const words = (pText ?? cText) || '';
+        const close = pClose ?? cClose;
+        tables += 1;
+        return (
+          `${open}<span class="engy-figure-number">${encode(tableLabel)} ${tables}</span>` +
+          `${words.trim() ? ` — ${words}` : ''}${close}`
+        );
+      }
+    );
+  }
+
+  return { html: out, count: numbers.size, tables, referenced, missing };
 }
 
 /** The same, across every field of a record that carries editor HTML. */

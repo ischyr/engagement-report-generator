@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+
+import UnloggedDays from '../components/layout/UnloggedDays.jsx';
 import {
   AtSign,
   CheckCheck,
   ClipboardCheck,
+  HelpCircle,
   Inbox as InboxIcon,
   MessageSquare,
   PenLine,
@@ -55,15 +58,27 @@ export default function InboxPage() {
     checks: data?.checks?.length ?? 0,
     assigned: data?.assigned?.length ?? 0,
     findings: data?.findings?.length ?? 0,
+    opinions: data?.opinions?.length ?? 0,
   };
   const nothingListed =
-    shown.reviews + shown.mentions + shown.comments + shown.checks + shown.assigned + shown.findings ===
+    shown.reviews +
+      shown.mentions +
+      shown.comments +
+      shown.checks +
+      shown.assigned +
+      shown.findings +
+      shown.opinions ===
     0;
 
   const tabs = useMemo(
     () => [
       { value: 'all', label: 'Everything', count: counts.total || undefined },
       { value: 'reviews', label: 'To review', count: counts.reviews || undefined },
+      /*
+       * Right after the reviews, because it is the same obligation at a tenth of the size —
+       * somebody is blocked on one answer about one finding, and it takes a minute.
+       */
+      { value: 'opinions', label: 'Asked of you', count: counts.opinions || undefined },
       { value: 'mentions', label: 'Mentions', count: counts.mentions || undefined },
       { value: 'comments', label: 'Comments', count: counts.comments || undefined },
       /*
@@ -183,6 +198,51 @@ export default function InboxPage() {
                 {mention.read ? null : (
                   <span aria-label="Unread" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand-400" />
                 )}
+              </Link>
+            ))}
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {/*
+        One question about one finding, which the engagement-level review is the wrong shape for.
+        Above the comments: a comment is a remark, and this is somebody waiting.
+      */}
+      <UnloggedDays />
+
+      {show('opinions') && data.opinions?.length ? (
+        <Card>
+          <CardHeader
+            icon={HelpCircle}
+            title="Somebody asked what you think"
+            description="A second opinion on one finding — the score, the wording, whether it is really theirs to fix. Oldest first, and the ones aimed at you by name above the ones anybody can take."
+          />
+          <CardBody className="flex flex-col gap-1.5">
+            {data.opinions.map((ask) => (
+              <Link
+                key={`${ask.auditId}:${ask.findingId}`}
+                to={`/engagements/${ask.auditId}/findings/${ask.findingId}`}
+                className="flex items-start gap-3 rounded-lg border border-line-soft bg-canvas/40 px-3 py-2.5 transition hover:border-brand-500/40"
+              >
+                <Avatar user={ask.askedBy} size={24} className="mt-0.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="flex flex-wrap items-center gap-x-2 text-[0.6875rem]">
+                    <span className="font-medium text-fg">{displayName(ask.askedBy)}</span>
+                    <span className="text-fg-subtle">on</span>
+                    <span className="truncate font-medium text-fg-muted">{ask.findingTitle}</span>
+                    {/* Aimed at you, or left for whoever is free — a real difference in how much
+                        of your problem it is. */}
+                    <Badge tone={ask.addressed ? 'info' : 'neutral'}>
+                      {ask.addressed ? 'asked of you' : 'anybody'}
+                    </Badge>
+                  </p>
+                  {ask.question ? (
+                    <p className="mt-1 line-clamp-2 text-xs text-fg-muted">{ask.question}</p>
+                  ) : null}
+                  <p className="mt-0.5 truncate text-[0.625rem] text-fg-subtle">
+                    {ask.auditName} · asked {timeAgo(ask.askedAt)}
+                  </p>
+                </div>
               </Link>
             ))}
           </CardBody>

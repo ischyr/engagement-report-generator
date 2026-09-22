@@ -24,9 +24,9 @@ import { Card, CardHeader } from '../components/ui/Card.jsx';
 import { PageHeader, Avatar } from '../components/ui/Misc.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { Modal, ConfirmDialog } from '../components/ui/Modal.jsx';
-import { Input, Toggle } from '../components/ui/Field.jsx';
+import { Checkbox, Input, Toggle } from '../components/ui/Field.jsx';
 import { Badge } from '../components/ui/Badge.jsx';
-import { EmptyState, ErrorState, SkeletonRows } from '../components/ui/Feedback.jsx';
+import { EmptyState, ErrorState, LoadingBlock, SkeletonRows } from '../components/ui/Feedback.jsx';
 import { Table, TBody, TD, TH, THead, TR } from '../components/ui/Table.jsx';
 import { Alert } from '../components/ui/Alert.jsx';
 
@@ -503,6 +503,69 @@ export default function UsersPage() {
     }
   };
 
+  /**
+   * Which accounts are ticked.
+   *
+   * By id rather than by row, because the list reloads under the selection — an approval comes in,
+   * somebody signs in — and a set of objects would quietly hold rows that no longer exist.
+   */
+  const [picked, setPicked] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [preview, setPreview] = useState(null);
+
+  /* Never yourself: the server refuses it, and offering a tick that cannot be acted on is worse
+     than not offering one. */
+  const selectable = users.filter((row) => row.id !== me?.id);
+  const pickedRows = selectable.filter((row) => picked.has(row.id));
+  const allPicked = selectable.length > 0 && pickedRows.length === selectable.length;
+
+  const togglePicked = (id) =>
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /**
+   * Opens the dialog and asks what these accounts are holding.
+   *
+   * Asked now rather than kept on the list, because it is seven counts an account and the list is
+   * drawn on every page load — the question only matters at the moment somebody is about to do
+   * something irreversible with the answer.
+   */
+  const openBulk = async () => {
+    setBulkOpen(true);
+    setPreview(null);
+    try {
+      setPreview(await api.post('/users/bulk-delete/preview', { ids: [...picked] }));
+    } catch (err) {
+      toast.fromError(err);
+      setBulkOpen(false);
+    }
+  };
+
+  const confirmBulkDelete = async () => {
+    setBulkBusy(true);
+    try {
+      const result = await api.post('/users/bulk-delete', { ids: [...picked] });
+      toast.success(
+        `${result.deleted} account${result.deleted === 1 ? '' : 's'} deleted`,
+        result.usernames?.slice(0, 4).join(', ') +
+          (result.usernames?.length > 4 ? ` and ${result.usernames.length - 4} more` : '')
+      );
+      setPicked(new Set());
+      setBulkOpen(false);
+      reload({ quiet: true });
+      queueChanged();
+    } catch (err) {
+      toast.fromError(err);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setDeleting(true);
@@ -546,6 +609,20 @@ export default function UsersPage() {
         ) : (
           <Table>
             <THead>
+              {/*
+                The select-all ticks everybody it *can*, which is everybody but you. A box that
+                claimed to select all and left one behind would be read as a bug the first time
+                somebody counted.
+              */}
+              <TH width="2.5rem">
+                <Checkbox
+                  checked={allPicked}
+                  disabled={selectable.length === 0}
+                  onChange={() =>
+                    setPicked(allPicked ? new Set() : new Set(selectable.map((row) => row.id)))
+                  }
+                />
+              </TH>
               <TH sort={sort} sortKey="person">Person</TH>
               <TH sort={sort} sortKey="role">Role</TH>
               <TH sort={sort} sortKey="status">Status</TH>
@@ -557,7 +634,17 @@ export default function UsersPage() {
               {users.map((row) => {
                 const isMe = row.id === me?.id;
                 return (
-                  <TR key={row.id}>
+                  <TR key={row.id} className={picked.has(row.id) ? 'bg-brand-500/[0.06]' : ''}>
+                    <TD>
+                      {/* Yours is shown as an empty cell rather than a disabled box: there is
+                          nothing to explain, and a greyed tick invites a second click. */}
+                      {isMe ? null : (
+                        <Checkbox
+                          checked={picked.has(row.id)}
+                          onChange={() => togglePicked(row.id)}
+                        />
+                      )}
+                    </TD>
                     <TD>
                       <div className="flex items-center gap-3">
                         <Avatar user={row} size={30} />
@@ -758,6 +845,122 @@ export default function UsersPage() {
         confirmLabel="Withdraw approval"
         message={`${displayName(pendingRevoke)} is signed out everywhere immediately and cannot sign in again until you approve them. Their password and authenticator are untouched, so letting them back in is one button and nothing to set up again.`}
       />
+
+      {/*
+        The bar, fixed to the bottom rather than sitting in the table.
+        Same shape as the one on the findings list, and for the same reason: a bar that scrolls
+        away is a bar you tick forty things and then cannot find.
+      */}
+      {pickedRows.length ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-30 flex justify-center px-4">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface/95 px-3 py-2 shadow-lg shadow-black/40 backdrop-blur">
+            <span className="mr-1 text-xs text-fg">
+              <span className="font-mono text-sm">{pickedRows.length}</span> selected
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => setPicked(new Set())}>
+              Clear
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={Trash2}
+              onClick={openBulk}
+            >
+              Delete
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {/*
+        Not a `ConfirmDialog`: this one has something to show before it asks.
+        Deleting an account does not hand on what it owned, so the least this can do is say what is
+        about to become unattributed while there is still time to reassign it.
+      */}
+      <Modal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        title={`Delete ${pickedRows.length} account${pickedRows.length === 1 ? '' : 's'}?`}
+        description="They lose access immediately, and this cannot be undone."
+        size="lg"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setBulkOpen(false)} disabled={bulkBusy}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              icon={Trash2}
+              loading={bulkBusy}
+              disabled={Boolean(preview?.refusals?.length)}
+              onClick={confirmBulkDelete}
+            >
+              Delete {pickedRows.length}
+            </Button>
+          </>
+        }
+      >
+        {!preview ? (
+          <LoadingBlock label="Working out what they hold…" />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {/* Why it would be refused, said before the button is pressed rather than after. */}
+            {preview.refusals?.length ? (
+              <Alert tone="error" title="This cannot go ahead">
+                <ul className="flex list-disc flex-col gap-0.5 pl-4">
+                  {preview.refusals.map((why) => (
+                    <li key={why}>{why}</li>
+                  ))}
+                </ul>
+              </Alert>
+            ) : null}
+
+            <Alert tone="warning" title="Nothing is handed on">
+              Findings assigned to these people stay assigned to an account that is gone, approvals
+              they gave still count towards a quorum, and their bookings and logged hours become
+              rows with no name. Reassign anything below that matters first.
+            </Alert>
+
+            <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
+              {preview.accounts.map((account) => {
+                const holds = Object.entries({
+                  'on engagements': account.holds.onEngagements,
+                  'findings assigned': account.holds.assignedFindings,
+                  'checks assigned': account.holds.checks,
+                  'API tokens': account.holds.tokens,
+                  'scratchpad notes': account.holds.notes,
+                  bookings: account.holds.bookings,
+                  'days logged': account.holds.hours,
+                }).filter(([, count]) => count > 0);
+
+                return (
+                  <li
+                    key={account.id}
+                    className="rounded-lg border border-line-soft bg-canvas/40 px-3 py-2"
+                  >
+                    <p className="flex flex-wrap items-center gap-2 text-xs text-fg">
+                      <span className="font-medium">{account.name}</span>
+                      <span className="text-fg-subtle">{account.username}</span>
+                      {account.roles.map((role) => (
+                        <Badge key={role} tone={ROLE_TONE[role]}>
+                          {roleLabel(role)}
+                        </Badge>
+                      ))}
+                    </p>
+                    {/* An account holding nothing is the easy case, and saying so is what makes
+                        the ones that do hold something stand out. */}
+                    <p className="mt-0.5 text-[0.6875rem] text-fg-muted">
+                      {holds.length
+                        ? holds.map(([what, count]) => `${count} ${what}`).join(' · ')
+                        : 'Holds nothing.'}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </Modal>
 
       <ConfirmDialog
         open={Boolean(pendingDelete)}

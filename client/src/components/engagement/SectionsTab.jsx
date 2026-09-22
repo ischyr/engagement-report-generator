@@ -7,7 +7,7 @@ import { saveShortcutLabel } from '../../lib/keys.js';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useResource } from '../../hooks/useResource.js';
 import { useUnsavedWork } from '../../context/UnsavedContext.jsx';
-import { isHtmlEmpty } from '../../lib/utils.js';
+import { cn, isHtmlEmpty } from '../../lib/utils.js';
 import { announceMentions } from '../../lib/mentions.js';
 
 import { Card, CardBody, CardHeader } from '../ui/Card.jsx';
@@ -82,6 +82,44 @@ function SectionCard({ section, auditId, editable, onSaved, onDelete, position, 
         }
         actions={
           <div className="flex items-center gap-2">
+            {/*
+              Body or appendix.
+
+              A toggle rather than a field in the editor below, because it is not part of writing
+              the section — it is where the section goes, which belongs beside the ordering
+              controls next to it. Saved on its own, immediately: it changes nothing about the
+              text, so making somebody press Save afterwards would be asking them to confirm a
+              decision they already made.
+            */}
+            {editable ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.put(`/audits/${auditId}/sections/${section._id}`, {
+                      appendix: !section.appendix,
+                    });
+                    onSaved?.();
+                  } catch (error) {
+                    toast.fromError(error);
+                  }
+                }}
+                aria-pressed={Boolean(section.appendix)}
+                title={
+                  section.appendix
+                    ? 'At the back of the report. Press to move it into the body.'
+                    : 'In the body. Press to move it to the appendices.'
+                }
+                className={cn(
+                  'rounded-md px-1.5 py-1 text-[0.625rem] font-medium uppercase tracking-wide transition',
+                  section.appendix
+                    ? 'bg-brand-500/15 text-brand-300'
+                    : 'text-fg-subtle hover:bg-white/5 hover:text-fg-muted'
+                )}
+              >
+                {section.appendix ? 'Appendix' : 'Body'}
+              </button>
+            ) : null}
             {/*
               Where this section sits, and how to move it.
 

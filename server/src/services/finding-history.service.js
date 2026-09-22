@@ -106,7 +106,7 @@ function occurrenceOf(audit, finding) {
     title: finding.title ?? '',
     severity: cvss.baseSeverity,
     score: cvss.baseScore,
-    remediationStatus: ['open', 'retesting', 'fixed'].includes(finding.remediationStatus)
+    remediationStatus: ['open', 'retesting', 'fixed', 'accepted'].includes(finding.remediationStatus)
       ? finding.remediationStatus
       : 'open',
   };
@@ -152,7 +152,8 @@ export function recurringIssues(audits) {
       firstSeen: first.date,
       lastSeen: latest.date,
       /** Whether the client still has it, going by the most recent engagement. */
-      stillOpen: latest.remediationStatus !== 'fixed',
+      /* An accepted risk is not still open: somebody decided, and this is what asks them again. */
+      stillOpen: !['fixed', 'accepted'].includes(latest.remediationStatus),
       status: latest.remediationStatus,
       /**
        * How long it took, when it did get fixed: the gap between first being told

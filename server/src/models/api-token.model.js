@@ -68,6 +68,17 @@ export const SCOPES = {
     label: 'Add enumeration steps',
     description: 'Record a tool run, its command and its output.',
   },
+  /**
+   * Its own scope, not part of `enumeration:write`.
+   *
+   * A script that pipes tool output in wants to record text; a script that uploads screenshots is
+   * putting *client evidence* into the instance, which is a larger thing to hand a string in a
+   * configuration file. Separating them lets a CI job have the first without the second.
+   */
+  'evidence:write': {
+    label: 'Upload evidence',
+    description: 'Upload screenshots and recordings to an engagement’s evidence bin.',
+  },
 };
 
 export const SCOPE_NAMES = Object.keys(SCOPES);

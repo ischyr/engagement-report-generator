@@ -374,6 +374,30 @@ export async function saveMedia({
   // The same screenshot in several findings is one stored object.
   const existing = await filesCollection().findOne({ 'metadata.sha256': sha256 });
   if (existing) {
+    /**
+     * Which engagements legitimately contain these bytes.
+     *
+     * Deduplication is by content and always has been, so one stored object can be reached from
+     * two engagements — the same stock screenshot of a login page, the same redacted diagram. That
+     * is the right thing for storage and the wrong thing for a single `metadata.audit`, which
+     * names only whoever uploaded it *first*: an access check built on that field would refuse
+     * everybody on the second engagement, for a picture that is genuinely in their report.
+     *
+     * So the list is the owner, and access is membership of any engagement on it. That is sound
+     * rather than a compromise: if two engagements both contain these bytes, somebody on either
+     * one already has them, and reading them through the other reveals nothing new.
+     */
+    const owner = asObjectId(audit?._id ?? audit) ?? null;
+    const owners = (existing.metadata?.audits ?? []).map(String);
+    const known = owner ? owners.includes(String(owner)) : true;
+
+    if (owner && !known) {
+      await filesCollection().updateOne(
+        { _id: existing._id },
+        { $addToSet: { 'metadata.audits': owner } }
+      );
+    }
+
     return {
       id: existing._id.toString(),
       url: mediaUrl(existing._id.toString()),
@@ -383,7 +407,15 @@ export async function saveMedia({
       contentType: existing.metadata?.contentType ?? resolvedType,
       kind: existing.metadata?.kind ?? mediaKind(existing.metadata?.contentType),
       poster: existing.metadata?.poster ?? null,
-      deduplicated: true,
+      /*
+       * Reported only when *this* engagement already had these bytes.
+       *
+       * Across engagements the flag was an oracle: upload a file, and a `true` told you the
+       * instance already held those exact bytes somewhere you cannot see. Cheap to remove and
+       * worth removing — the caller's honest question is "was this already in my engagement", and
+       * that is the one it now answers.
+       */
+      deduplicated: known,
     };
   }
 
@@ -420,6 +452,15 @@ export async function saveMedia({
          * why the read still matches either.
          */
         audit: asObjectId(audit?._id ?? audit) ?? null,
+        /**
+         * Every engagement these bytes belong to, which is what decides who may read them.
+         *
+         * `audit` above stays as it was — the bin reads it, and it is the engagement that captured
+         * this. This is the *set*, because deduplication means a second engagement can arrive at
+         * the same object later, and an access check that only knew the first would refuse
+         * everybody on the second for a picture that is in their own report. See `assertMayReadMedia`.
+         */
+        audits: asObjectId(audit?._id ?? audit) ? [asObjectId(audit?._id ?? audit)] : [],
         /**
          * Who this came from, when it did not come from the team.
          *
@@ -866,6 +907,20 @@ export async function collectOrphanMedia({ graceMs = 24 * 60 * 60 * 1000, dryRun
   for await (const body of EnumerationBody.find().select('content').lean()) {
     for (const id of mediaIdsInHtml(body.content)) referenced.add(id);
   }
+  /*
+   * Scratchpad notes — the one place evidence lives that belongs to no engagement.
+   *
+   * A screenshot pasted into a private note is uploaded like any other, with no owning engagement,
+   * and is referenced only from `scratch.content`. Without this the sweep found no reference to
+   * it, called it an orphan, and deleted somebody's own evidence out from under a note they were
+   * keeping precisely because it was not finished with. The same failure the enumeration bodies
+   * above are here to prevent, in the one collection that is nobody's engagement.
+   */
+  const { Scratch } = await import('../models/scratch.model.js');
+  for await (const note of Scratch.find().select('content').lean()) {
+    for (const id of mediaIdsInHtml(note.content)) referenced.add(id);
+  }
+
   // Deleted-but-restorable findings count as references: sweeping their screenshots
   // would turn a restore into a finding with holes where the evidence used to be.
   const { DeletedFinding } = await import('../models/deleted-finding.model.js');

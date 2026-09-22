@@ -138,6 +138,16 @@ npm run test:images   # the rules that scale a screenshot on its way in
 npm run test:keys     # what counts as a save keystroke
 npm run test:import   # reading findings back out of a spreadsheet
 npm run test:figures  # captioning and reordering evidence
+npm run test:report-craft # what changed between two renders, and what preflight reads
+npm run test:page-break  # one finding, one page
+npm run test:numbering   # the order findings print in, and the numbers on them
+npm run test:media-access # evidence, renders and the pulse are refused to non-members
+npm run test:acceptance # accepted risks and per-host coverage
+npm run test:report-blocks # callouts, footnotes, page breaks and cross-references
+npm run test:audit-size # the readout that warns before a save can be refused
+npm run test:captions # numbered tables, and the lists at the front of the report
+npm run test:code-pane # colouring a code pane, counting its lines, keeping the marked one
+npm run test:table-caption # naming a table in the editor, without breaking the table
 npm run smoke         # renders a report and every page, checks contrast
 ```
 

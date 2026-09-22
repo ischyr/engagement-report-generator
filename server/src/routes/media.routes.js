@@ -29,9 +29,10 @@ import {
 } from '../services/media.service.js';
 import { requireAuth, requireMediaAuth, requireWrite } from '../middleware/auth.js';
 import asyncHandler from '../utils/async-handler.js';
-import { badRequest, notFound } from '../utils/http-error.js';
+import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { Audit } from '../models/audit.model.js';
 import { assertMayOpen } from '../services/classification.service.js';
+import { membershipExpired } from '../utils/audit-scope.js';
 import { log } from '../utils/logger.js';
 
 const router = Router();
@@ -103,10 +104,88 @@ router.get(
  * a restriction the findings enforce.
  */
 async function assertMayUseBin(auditId, user) {
-  const audit = await Audit.findById(auditId).select('creator collaborators reviewers classification classifiedBy deletedAt');
+  const audit = await Audit.findById(auditId).select(
+    'creator collaborators reviewers classification classifiedBy deletedAt memberUntil'
+  );
   if (!audit) throw notFound('Engagement not found');
   assertMayOpen(audit, user);
+  /*
+   * And whether they are on it at all.
+   *
+   * `assertMayOpen` enforces exactly one rule — a restricted engagement needs two-factor
+   * authentication — and returns immediately for everything else. It was the only check here, so
+   * the bin, the caption and the delete answered to any signed-in account that knew an engagement
+   * id. The fields were even projected for it and never read.
+   */
+  assertMember(audit, user);
   return audit;
+}
+
+/**
+ * Whether this person is on this engagement, and still is.
+ *
+ * The same rule `loadAudit` applies to everything under `/audits/:id` — creator, collaborator or
+ * reviewer, and not past their end date. Written out here rather than imported from the routes
+ * file, which is nine thousand lines and would drag the whole of it in for one comparison.
+ */
+function assertMember(audit, user) {
+  if (user.role === 'admin') return;
+  const uid = String(user._id);
+  const allowed = [
+    audit.creator?._id?.toString() ?? audit.creator?.toString(),
+    ...(audit.collaborators ?? []).map((c) => c._id?.toString() ?? c.toString()),
+    ...(audit.reviewers ?? []).map((r) => r._id?.toString() ?? r.toString()),
+  ];
+  if (!allowed.includes(uid)) throw forbidden('You do not have access to this engagement');
+  if (membershipExpired(audit, user)) {
+    throw forbidden('Your access to this engagement ended. Ask whoever runs it to extend it.');
+  }
+}
+
+/**
+ * Whether this person may read these bytes.
+ *
+ * **The gap this closes.** `requireMediaAuth` proves who you are and nothing else, and the route
+ * below never loaded an engagement — so any signed-in account that had a media id could fetch any
+ * engagement's evidence, a restricted engagement's included, with no two-factor and no membership.
+ * Ids are ObjectIds rather than guessable, but they travel in report HTML and in links.
+ *
+ * Read against `metadata.audits`, the set of engagements these bytes belong to, because
+ * deduplication means one object can legitimately be in two reports. Membership of any one of them
+ * is enough, and that is sound: somebody on either engagement already has the bytes through their
+ * own, so reading them through the object reveals nothing about the other.
+ *
+ * **A file with no engagement on it stays readable to any signed-in account.** Those are the
+ * pictures the app composes rather than evidence — a logo, a signature, a chart — plus anything
+ * uploaded before the engagement was recorded. Refusing them would break the branding on every
+ * page to close nothing: they are not client evidence.
+ */
+async function assertMayReadMedia(file, user) {
+  const owners = [
+    ...(file.metadata?.audits ?? []),
+    ...(file.metadata?.audit ? [file.metadata.audit] : []),
+  ].map(String);
+  if (!owners.length) return;
+  if (user.role === 'admin') return;
+
+  const audits = await Audit.find({ _id: { $in: [...new Set(owners)] } }).select(
+    'creator collaborators reviewers classification classifiedBy deletedAt memberUntil'
+  );
+  /*
+   * Any one of them is enough, and every refusal is collected rather than thrown at the first.
+   * A restricted engagement in the list must not be the reason somebody is refused a picture they
+   * can reach through an ordinary one they are on.
+   */
+  for (const audit of audits) {
+    try {
+      assertMayOpen(audit, user);
+      assertMember(audit, user);
+      return;
+    } catch {
+      /* Try the next engagement that holds these bytes. */
+    }
+  }
+  throw forbidden('That evidence belongs to an engagement you are not on.');
 }
 
 /**
@@ -174,6 +253,8 @@ router.get(
   requireMediaAuth,
   asyncHandler(async (req, res) => {
     const file = await mediaInfo(req.params.id);
+    /* Before the ETag: a 304 is an answer, and must not be one this person may not have. */
+    await assertMayReadMedia(file, req.user);
     const etag = `"${file.metadata?.sha256 ?? file._id}"`;
 
     if (req.headers['if-none-match'] === etag) {

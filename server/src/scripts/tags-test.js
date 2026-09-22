@@ -461,6 +461,52 @@ async function main() {
       found.join(' / ') || 'the validator saw nothing wrong'
     );
 
+    /*
+     * And the render refuses to hand one over.
+     *
+     * The validator has been right since it was written and, until now, was only ever asked by a
+     * test. Wiring it into `renderDocx` is the point of it: a document Word cannot open, whose
+     * error message sends the client to check their disk space, must not leave the building.
+     *
+     * The template here is broken in a way the converter cannot cause on its own — which is
+     * exactly why the check has to construct it. On correct input the guard never fires, so
+     * without this the guard could be deleted and every suite would still pass.
+     */
+    const unopenable = new PizZip(await templateFrom(['x']));
+    unopenable.file(
+      'word/_rels/document.xml.rels',
+      Buffer.from(
+        unopenable
+          .file('word/_rels/document.xml.rels')
+          .asText()
+          .replace(
+            '</Relationships>',
+            '<Relationship Id="rIdGhost" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/nothing.png"/></Relationships>'
+          ),
+        'utf8'
+      )
+    );
+    let refused = null;
+    try {
+      const { openTemplate: _unused } = await import('../services/docx-render.service.js');
+      const { renderDocx } = await import('../services/docx-render.service.js');
+      const { DocxAssembler } = await import('../services/ooxml/docx-parts.js');
+      const parts = new DocxAssembler(unopenable).load();
+      renderDocx({ zip: unopenable, parts, data: {}, dateFormat: 'yyyy-MM-dd' });
+    } catch (error) {
+      refused = error;
+    }
+    check(
+      'a render that produced a package Word cannot open is refused, not returned',
+      Boolean(refused),
+      'it handed the bytes over'
+    );
+    check(
+      '  and says which part is wrong',
+      /nothing\.png/.test(refused?.message ?? ''),
+      refused?.message ?? '(no error)'
+    );
+
     /* The other package rules, each broken on purpose. */
     const dangling = new PizZip(await templateFrom(['x']));
     dangling.file(

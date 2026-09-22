@@ -11,11 +11,11 @@
  */
 
 import { Booking } from '../models/booking.model.js';
-import { Notification } from '../models/notification.model.js';
 import { Audit } from '../models/audit.model.js';
 import { membershipExpired } from '../utils/audit-scope.js';
 import { clashingLeave, describeClash } from './leave.service.js';
 import { log } from '../utils/logger.js';
+import { notify } from './notify.service.js';
 
 /** How far ahead to look. Two days catches "starts on Monday" from a Friday afternoon. */
 export const REMINDER_DAYS = 2;
@@ -82,7 +82,7 @@ export async function remindUpcomingBookings({ now = new Date(), days = REMINDER
      */
     const clash = describeClash(await clashingLeave(booking.user, booking.start, booking.end), 'You');
 
-    await Notification.create({
+    await notify({
       user: booking.user,
       type: 'booking-soon',
       audit: audit._id,

@@ -267,8 +267,20 @@ router.post(
     if (added.length) {
       await Vulnerability.insertMany(added.map(withSnippets), { ordered: false });
     }
-    for (const { _id, entry } of updates) {
-      await Vulnerability.updateOne({ _id }, { $set: withSnippets(forExport(entry)) });
+    /*
+     * One write for every update, the way the insert half already does it.
+     *
+     * The additions above go in with a single `insertMany` and the updates went in one at a time —
+     * so importing a bundle that mostly *overlaps* an existing library, which is the ordinary case
+     * when somebody re-imports a corrected export, was the slow path by a long way.
+     */
+    if (updates.length) {
+      await Vulnerability.bulkWrite(
+        updates.map(({ _id, entry }) => ({
+          updateOne: { filter: { _id }, update: { $set: withSnippets(forExport(entry)) } },
+        })),
+        { ordered: false }
+      );
     }
 
     res.status(201).json({

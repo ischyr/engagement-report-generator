@@ -208,7 +208,15 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
     })
     .filter((row) => row.reasons.length)
     .sort((a, b) => attentionRank(b.reasons) - attentionRank(a.reasons))
-    .slice(0, 8);
+    /*
+     * More than fits on the card, because the card shows five and a dialog shows the rest.
+     *
+     * The whole list is worked out either way — the slice is the last step of a pipeline that has
+     * already visited every live engagement — so this is a payload decision and not a work one.
+     * Still bounded: an instance with two hundred engagements in trouble has a problem no list
+     * will fix, and sending all two hundred to a dashboard would only make it slower to find out.
+     */
+    .slice(0, 20);
 
   /* --------------------------------------------------------------- coming round */
   const due = audits
@@ -247,7 +255,17 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
       const key = severity === 'None' ? 'none' : severity.toLowerCase();
       if (key in severityCounts) severityCounts[key] += 1;
       findingCount += 1;
-      if ((severity === 'Critical' || severity === 'High') && finding.remediationStatus !== 'fixed') {
+      /*
+       * Neither fixed nor accepted, like everywhere else this number is computed.
+       *
+       * This is the figure on the dashboard that decides where somebody looks first. A Critical
+       * the client has formally accepted is not a Critical anybody is working on, and counting it
+       * here would keep pointing the whole team at an engagement where nothing is outstanding.
+       */
+      if (
+        (severity === 'Critical' || severity === 'High') &&
+        !['fixed', 'accepted'].includes(finding.remediationStatus)
+      ) {
         openSerious += 1;
       }
     }
@@ -267,9 +285,11 @@ export async function dashboardFor(user, { now = new Date() } = {}) {
     },
     mine: {
       bookings: upcoming,
-      checks: myChecks.slice(0, 8),
+      /* Enough for the dialog, which shows what the card's five leave out. `*Total` is still the
+         real count, so the dialog can say when even it is not showing everything. */
+      checks: myChecks.slice(0, 30),
       checksTotal: myChecks.length,
-      findings: myFindingsWithoutEvidence.slice(0, 6),
+      findings: myFindingsWithoutEvidence.slice(0, 30),
       findingsTotal: myFindingsWithoutEvidence.length,
       unloggedDays,
       /** So the page can say "nothing needs you" rather than showing four empty lists. */

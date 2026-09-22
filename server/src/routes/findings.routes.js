@@ -29,7 +29,9 @@ const router = Router();
 const SEVERITIES = ['Critical', 'High', 'Medium', 'Low', 'None'];
 /** Worst first — the order the page is read in. */
 const SEVERITY_RANK = new Map(SEVERITIES.map((severity, index) => [severity, index]));
-const STATUSES = ['open', 'retesting', 'fixed'];
+const STATUSES = ['open', 'retesting', 'fixed', 'accepted'];
+/* Still somebody's to do. An accepted risk is unresolved as a vulnerability and closed as work. */
+const OUTSTANDING = (status) => status !== 'fixed' && status !== 'accepted';
 
 /**
  * How many rows leave the server.
@@ -137,13 +139,13 @@ router.get(
 
         /* ------------------------------------------------------------- facets */
         facets.severity[severity] += 1;
-        if (status !== 'fixed') facets.outstanding[severity] += 1;
+        if (OUTSTANDING(status)) facets.outstanding[severity] += 1;
         if (!facets.clients.has(companyName)) {
           facets.clients.set(companyName, { name: companyName, id: companyId, findings: 0, open: 0 });
         }
         const clientFacet = facets.clients.get(companyName);
         clientFacet.findings += 1;
-        if (status !== 'fixed') clientFacet.open += 1;
+        if (OUTSTANDING(status)) clientFacet.open += 1;
 
         /* ------------------------------------------------------------ filters */
         if (wantedSeverities && !wantedSeverities.includes(severity)) continue;

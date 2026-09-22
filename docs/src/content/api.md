@@ -143,6 +143,35 @@ curl -H "Authorization: Bearer engy_…" https://engy.example/api/v1/whoami
 `GET /api/v1` lists every endpoint with the scope it needs, so the API describes itself and this
 page cannot be the only record of it.
 
+## Uploading a screenshot
+
+```text
+POST /api/v1/engagements/:id/evidence     scope: evidence:write
+```
+
+Multipart, field name `file`:
+
+```bash
+curl -X POST "$ENGY/api/v1/engagements/$ID/evidence" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@admin-panel.png"
+```
+
+It answers with the URL a write-up references the picture by, its size and dimensions, and whether
+this engagement already had those exact bytes.
+
+**It lands in the evidence bin, not in a finding.** That is the shape of it: a script captures while
+the work is happening and has no opinion about which write-up the picture belongs to, which is a
+decision somebody makes later while looking at it.
+
+`evidence:write` is its own scope rather than part of `enumeration:write`. A job that pipes tool
+output in is recording text; one that uploads screenshots is putting client evidence into the
+instance, which is a larger thing to hand a string in a configuration file.
+
+A caller that declares no type — `application/octet-stream` — is accepted and judged on the bytes,
+because the content decides here as everywhere else. A file that is not an image or a recording is
+refused whatever it claims to be.
+
 ## The endpoints
 
 ### Engagements

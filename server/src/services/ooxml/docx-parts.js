@@ -16,7 +16,7 @@
  * allocation and commit are separate steps.
  */
 
-import { FIGURE_BOOKMARK } from './figure-fields.js';
+import { FIGURE_BOOKMARK, TABLE_BOOKMARK } from './figure-fields.js';
 
 const DOC_RELS = 'word/_rels/document.xml.rels';
 /**
@@ -35,6 +35,7 @@ const CUSTOM_PROPS_REL =
 const CONTENT_TYPES = '[Content_Types].xml';
 const NUMBERING = 'word/numbering.xml';
 const SETTINGS = 'word/settings.xml';
+const FOOTNOTES = 'word/footnotes.xml';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
@@ -145,6 +146,16 @@ export class DocxAssembler {
     this.figureBookmarks = new Map();
     /** Pictures whose caption has already been written, so only the first one is numbered. */
     this.captionedFigures = new Set();
+    /**
+     * How many tables have been captioned, which is the only key a table has.
+     *
+     * A figure's bookmark is named after its media id, so a reference written before the picture
+     * finds it. A table has no such thing — it is markup in a write-up, not a stored object — so
+     * its bookmark is named by the order it was written in. Which means a table cannot be
+     * cross-referenced from another field, and that is an honest limit rather than an oversight:
+     * there is nothing stable to point at.
+     */
+    this.tableCaptions = 0;
     this.nextBookmarkId = 4000;
     /** @type {Set<string>} style ids declared by word/styles.xml */
     this.styleIds = new Set();
@@ -182,8 +193,56 @@ export class DocxAssembler {
       this.styleIds.add(match[1]);
     }
 
+    /*
+     * The footnote part, if the template has one.
+     *
+     * Every document Word creates from its own default template carries `word/footnotes.xml`,
+     * already declared in the content types, already related from the document, and already
+     * holding the two separator footnotes at ids -1 and 0. So the common case needs no package
+     * surgery at all — just an entry appended and a reference emitted.
+     *
+     * A template *without* it is left alone rather than repaired. Creating the part means a
+     * content-type override, a relationship, and the separator footnotes Word expects to find —
+     * three chances to produce a package Word refuses, in service of a template that has opted out
+     * of footnotes by construction. `#footnote` degrades to a parenthetical instead, which is what
+     * the writer meant anyway.
+     */
+    this.footnotesXml = this.#read(FOOTNOTES);
+    this.newFootnotes = [];
+    this.nextFootnoteId = 1;
+    for (const match of (this.footnotesXml ?? '').matchAll(/<w:footnote\b[^>]*w:id="(-?\d+)"/g)) {
+      this.nextFootnoteId = Math.max(this.nextFootnoteId, Number(match[1]) + 1);
+    }
+
     this.page = readPageGeometry(this.#read('word/document.xml') ?? '');
     return this;
+  }
+
+  /** Whether this template can carry footnotes at all. */
+  get hasFootnotes() {
+    return typeof this.footnotesXml === 'string' && this.footnotesXml.includes('</w:footnotes>');
+  }
+
+  /**
+   * Stores one footnote and hands back the id to reference it by.
+   *
+   * `paragraphs` is the footnote's body as WordprocessingML — already converted, because the text
+   * of a footnote is ordinary rich text and goes through the same path as everything else.
+   *
+   * Word does the numbering. `<w:footnoteRef/>` inside the note renders as whatever number the
+   * note ends up being, which means a note inserted ahead of another renumbers both without
+   * anything here knowing — the same reason figure captions carry a `SEQ` field.
+   *
+   * @returns {number|null} null when the template has no footnote part
+   */
+  addFootnote(paragraphs) {
+    if (!this.hasFootnotes) return null;
+    const id = this.nextFootnoteId;
+    this.nextFootnoteId += 1;
+    this.newFootnotes.push(
+      `<w:footnote w:id="${id}">${paragraphs}</w:footnote>`
+    );
+    return id;
   }
 
   /**
@@ -261,6 +320,24 @@ export class DocxAssembler {
     if (this.captionedFigures.has(key)) return false;
     this.captionedFigures.add(key);
     return true;
+  }
+
+  /**
+   * A bookmark for the next captioned table.
+   *
+   * Allocated in writing order, and never looked up again — unlike a figure's, which both ends
+   * ask for. See `tableCaptions` for why a table has no key to be looked up by.
+   *
+   * The number the caption prints is still decided by the pass over the finished document, not by
+   * this counter: writing order is not document order, because the template chooses which sections
+   * come first.
+   *
+   * @returns {{name:string, id:number}}
+   */
+  tableBookmark() {
+    this.tableCaptions += 1;
+    this.nextBookmarkId += 1;
+    return { name: `${TABLE_BOOKMARK}${this.tableCaptions}`, id: this.nextBookmarkId };
   }
 
   addHyperlink(url) {
@@ -502,6 +579,17 @@ export class DocxAssembler {
         ? this.numberingXml.replace('</w:numbering>', `${this.extraNums.join('')}</w:numbering>`)
         : this.numberingXml;
       this.zip.file(NUMBERING, Buffer.from(xml, 'utf8'));
+    }
+
+    /* Appended before the closing tag: `<w:footnote>` elements are the only children there are. */
+    if (this.newFootnotes?.length && this.hasFootnotes) {
+      this.zip.file(
+        FOOTNOTES,
+        Buffer.from(
+          this.footnotesXml.replace('</w:footnotes>', `${this.newFootnotes.join('')}</w:footnotes>`),
+          'utf8'
+        )
+      );
     }
 
     for (const { path, buffer } of this.newFiles) {

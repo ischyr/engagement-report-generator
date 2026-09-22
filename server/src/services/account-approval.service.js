@@ -15,8 +15,8 @@
  */
 
 import { User } from '../models/user.model.js';
-import { Notification } from '../models/notification.model.js';
 import { log } from '../utils/logger.js';
+import { notify } from './notify.service.js';
 
 /** Fields the approval queue needs, and nothing that would leak a secret. */
 // `roles`, not `role`: the latter is a virtual and selecting it fetches nothing.
@@ -114,7 +114,7 @@ export async function notifyAdminsOfPendingAccount(user) {
     return 0;
   }
 
-  await Notification.create(
+  await notify(
     admins.map((admin) => ({
       user: admin._id,
       type: 'account-awaiting-approval',
@@ -136,7 +136,7 @@ export async function notifyAdminsOfPendingAccount(user) {
  */
 async function noticeApproved(user, actor) {
   if (!actor || String(actor._id) === String(user._id)) return;
-  await Notification.create({
+  await notify({
     user: user._id,
     type: 'account-approved',
     actor: actor._id,

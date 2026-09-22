@@ -8,10 +8,10 @@
 
 import { Activity, ACTIONS } from '../models/activity.model.js';
 import { announceActivity } from './webhooks/index.js';
-import { Notification } from '../models/notification.model.js';
 import { User, WORKING_ROLES } from '../models/user.model.js';
 import { membershipExpired } from '../utils/audit-scope.js';
 import { log } from '../utils/logger.js';
+import { notify } from './notify.service.js';
 
 export { ACTIONS };
 
@@ -87,6 +87,7 @@ function buildSummary({ actor, action, target, fields, meta }) {
     [ACTIONS.APPROVALS_CLEARED]: `Approvals were cleared because ${what || 'content'} changed after sign-off`,
     [ACTIONS.REPORT_GENERATED]: `${who} generated the report${meta?.template ? ` from "${meta.template}"` : ''}`,
     [ACTIONS.MEDIA_REPLACED]: `${who} replaced ${what} in ${meta?.places ?? 0} place(s)`,
+    [ACTIONS.MEDIA_UPLOADED]: `${who} uploaded ${what} to the evidence bin`,
     [ACTIONS.FINDING_TRANSFERRED]: `${who} ${
       { out: 'moved', 'copied-from': 'copied', in: meta?.mode === 'move' ? 'moved in' : 'copied in' }[
         meta?.direction
@@ -141,6 +142,7 @@ function buildSummary({ actor, action, target, fields, meta }) {
     [ACTIONS.CHECK_ASSIGNED]: `${who} ${
       meta?.assigned ? 'assigned' : 'unassigned'
     } the check ${what}`,
+    [ACTIONS.CLOSEOUT_RECORDED]: `${who} recorded the closeout call`,
     [ACTIONS.CHECK_TICKED]: `${who} verified ${what}`,
     [ACTIONS.CHECK_UNTICKED]: `${who} un-verified ${what}`,
     [ACTIONS.CHECK_DELETED]: `${who} removed the check ${what}`,
@@ -149,6 +151,13 @@ function buildSummary({ actor, action, target, fields, meta }) {
     // The reason is the point of the entry, so it is in the sentence rather than the metadata.
     [ACTIONS.CHECK_BLOCKED]: `${who} marked ${what} as blocked — ${meta?.reason ?? 'no reason given'}`,
     [ACTIONS.CHECK_UNBLOCKED]: `${who} unblocked ${what}`,
+
+    /* The question is in the sentence, because the question is the entry. */
+    [ACTIONS.OPINION_ASKED]: meta?.question
+      ? `${who} asked for a second opinion on ${what} — ${meta.question}`
+      : `${who} asked for a second opinion on ${what}`,
+    [ACTIONS.OPINION_GIVEN]: `${who} gave a second opinion on ${what}`,
+    [ACTIONS.OPINION_WITHDRAWN]: `${who} withdrew the question on ${what}`,
 
     [ACTIONS.COMMENT_ADDED]: `${who} commented on ${what}`,
     [ACTIONS.COMMENT_RESOLVED]: `${who} resolved a comment on ${what}`,
@@ -317,7 +326,7 @@ export async function notifyMentions({
   const recipients = users.filter((u) => u._id.toString() !== actorId);
 
   if (recipients.length) {
-    await Notification.insertMany(
+    await notify(
       recipients.map((user) => ({
         user: user._id,
         type: 'mention',
@@ -369,7 +378,7 @@ export async function notifyReviewRequested({ audit, actor }) {
     .map((person) => person._id);
   if (reviewers.length === 0) return 0;
 
-  await Notification.insertMany(
+  await notify(
     reviewers.map((id) => ({
       user: id,
       type: 'review-requested',
@@ -398,7 +407,7 @@ export async function notifyCheckAssigned({ user, actor, audit, title }) {
   // how a notification bell stops being read.
   if (recipient === String(actor?._id ?? actor ?? '')) return false;
 
-  await Notification.create({
+  await notify({
     user: recipient,
     type: 'check-assigned',
     actor: actor?._id ?? actor ?? null,
@@ -407,6 +416,61 @@ export async function notifyCheckAssigned({ user, actor, audit, title }) {
     target: title,
     message: `${nameOf(actor)} gave you "${title}" on ${audit.name}`,
     href: `/engagements/${audit._id}?tab=checks`,
+  });
+  return true;
+}
+
+/**
+ * Tells somebody they have been asked to look at one finding.
+ *
+ * Addressed to a person when one was named and to everybody else on the engagement when not,
+ * because "whoever is free" is half of why anybody asks. Not to the asker — telling you what you
+ * just did is how a bell stops being read, the same rule `notifyFindingAssigned` follows.
+ *
+ * @param {object} options
+ * @param {object|string} [options.of] the person asked, or null for anybody
+ * @param {object[]} options.team everybody on the engagement, for the unaddressed case
+ */
+export async function notifySecondOpinion({ of, team = [], actor, audit, finding, question }) {
+  const actorId = String(actor?._id ?? actor ?? '');
+  const named = String(of?._id ?? of ?? '');
+  const recipients = named
+    ? [named]
+    : [...new Set(team.map((person) => String(person?._id ?? person ?? '')).filter(Boolean))];
+
+  const wanted = recipients.filter((id) => id && id !== actorId);
+  if (!wanted.length) return 0;
+
+  await notify(
+    wanted.map((user) => ({
+      user,
+      type: 'second-opinion-asked',
+      actor: actor?._id ?? actor ?? null,
+      audit: audit._id,
+      auditName: audit.name ?? '',
+      target: finding.title,
+      message: question
+        ? `${nameOf(actor)} asked you about "${finding.title}" — ${question}`
+        : `${nameOf(actor)} asked you to look at "${finding.title}" on ${audit.name}`,
+      href: `/engagements/${audit._id}?tab=findings&finding=${finding._id}`,
+    }))
+  );
+  return wanted.length;
+}
+
+/** And tells the person who asked that somebody answered. */
+export async function notifyOpinionGiven({ asker, actor, audit, finding }) {
+  const recipient = String(asker?._id ?? asker ?? '');
+  if (!recipient || recipient === String(actor?._id ?? actor ?? '')) return false;
+  await notify({
+    user: recipient,
+    type: 'second-opinion-given',
+    actor: actor?._id ?? actor ?? null,
+    audit: audit._id,
+    auditName: audit.name ?? '',
+    target: finding.title,
+    message: `${nameOf(actor)} answered your question on "${finding.title}"`,
+    href: `/engagements/${audit._id}?tab=findings&finding=${finding._id}`,
   });
   return true;
 }
@@ -432,7 +496,7 @@ export async function notifyFindingAssigned({ user, actor, audit, titles = [] })
   if (recipient === String(actor?._id ?? actor ?? '')) return false;
 
   const one = titles.length === 1;
-  await Notification.create({
+  await notify({
     user: recipient,
     type: 'finding-assigned',
     actor: actor?._id ?? actor ?? null,

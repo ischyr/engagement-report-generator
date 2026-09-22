@@ -69,6 +69,54 @@ instance never generated, or a document from before contents were recorded all s
 words. A register whose whole value is exactness must never answer "nothing changed" when it means
 "I cannot tell".
 
+## What preflight reads
+
+Most of preflight is structural — an empty section, a finding with no remediation, a dangling
+figure reference. Two checks read the prose itself.
+
+**Another client's name.** The worst realistic mistake in this trade and the only one on the list
+that ends a relationship: somebody writes up an issue by copying the paragraph they wrote for a
+different client last month, changes the hostname, and misses the company name in the third
+sentence. Every other client on the instance is looked for in every finding and every section, and
+finding one is a **blocker** rather than a warning.
+
+Names shorter than four characters are skipped, and so are ones that are ordinary English — *Data*,
+*Group*, *Systems*. A client called *IT* would otherwise flag every paragraph mentioning the IT
+department, and a check that cries wolf is one people turn off.
+
+**Roughly how long it will be.** *"Is this a forty-page report or a ninety-page one"* decides
+whether the executive summary needs cutting, and the only way to find out was to generate it and
+open it in Word — which nobody does on a draft, so the answer arrived too late to act on.
+
+Reported as a range, deliberately. It is counted from the material — words at roughly five hundred
+to a page, screenshots at about a third of a page, output panes by the line — and your template's
+margins, type size and page breaks decide the real figure. A single number would be believed.
+
+## What the words became
+
+The register has always been able to say *"the remediation on VULN-03 changed"*. Comparing two
+renders now says what it changed **to** — the old words struck through, the new ones marked, in
+place in the sentence.
+
+Inline rather than two columns, because an edit to a write-up is nearly always a few words inside a
+paragraph, and two columns of near-identical text asks you to do the comparison the computer has
+already done.
+
+A field can be reported as changed with no words shown, and that means one of three things: it is
+not prose (a score, an order), one of the two renders predates the words being kept, or the field
+was rewritten wholesale — past about six hundred changed words, *"this was rewritten"* is the
+honest summary and a word-by-word diff is not something anybody reads.
+
+> [!note]
+> Renders store the plain text of the prose fields so this can work, capped at 3,000 characters a
+> field and 250 KB a render. A very large engagement will have words kept for its findings and
+> hashes only for whatever came after the budget ran out — those still report as changed, without
+> the diff.
+>
+> Renders taken before this existed compare as *"incomparable"* rather than *"unchanged"*, because
+> a change list with diffs on one side and none on the other reads as though the missing ones did
+> not move.
+
 ## The handling marking
 
 An engagement's **classification** already decides how long it survives in the trash and whether a
@@ -186,6 +234,62 @@ means it was edited after it was generated or came from somewhere else.
 
 The file never leaves the machine. Identifying a document does not require uploading it.
 
+## One finding per page
+
+Off by default, and a checkbox in [Settings](/settings) when your house style wants it: every
+finding starts at the top of a page.
+
+It is applied to the template rather than to the finished file, and that is the whole reason it is
+a setting at all. Where a finding *begins* is a fact about the template — the heading is
+`{{ .id }} — {{ .title }}` inside the findings loop, drawn by whichever .docx the engagement points
+at. Once the loop has been filled in, every write-up's first paragraph looks like every other
+paragraph in the document, and nothing in the data or in the file marks where one finding ends and
+the next starts. So the break is set on the loop before it repeats.
+
+Nothing else in the document moves, and a template it cannot be applied to is rendered exactly as
+it was before, with the reason in the server log.
+
+## What a render is checked against
+
+Before the bytes are handed over, the finished package is checked against the rules Word actually
+enforces: every part has a content type, every relationship points at something that is in the
+package, every XML part is well formed and free of the control characters XML forbids.
+
+This exists because of a report Word refused with *"an error trying to open the file — check the
+file permissions, make sure there is sufficient free memory and disk space"*, none of which was the
+problem. A .docx can be broken in ways that parse, unzip and pass every test, and Word's message
+points at the disk.
+
+**A problem fails the render** rather than producing a file the client cannot open, and the queue
+tells whoever asked, with the reason. On correct input it never fires — it is a backstop, and the
+checks that prove it is wired deliberately construct a package the converter could not produce on
+its own.
+
+## Where a render's time goes
+
+Every render records how long it took, and now also how long each stage took — opening the
+template, fetching the evidence, laying it out, assembling it. The breakdown is on the time in the
+render register, on hover.
+
+The total on its own was never actionable: *"this report takes ninety seconds"* is a fact nobody
+can do anything with until it says which ninety. The timings hang off the same boundaries the
+progress bar announces, so the stage somebody waited through and the stage in the record are the
+same thing called the same name.
+
+## When a render fails
+
+Generating queues a job, which is the point — you can close the tab. So the one thing the queue owes
+you is to come back and say what happened, and it now does: a render that fails raises a
+notification for whoever asked for it, with the reason in the notification rather than only behind
+a link.
+
+That covers the case the page could never catch. Previously the outcome was polled by the page that
+started it, so closing the tab lost it entirely and somebody came back an hour later to a report
+that had simply never arrived. A render abandoned by a server restart is notified the same way.
+
+Successful renders raise nothing. They announce themselves by being downloadable, and a
+notification for every one would be noise that teaches people to ignore the failures.
+
 ## Recording a delivery
 
 ![The delivery register of an engagement. One row: version 1.0, sent by email to the client contact, the filename, the first characters of its SHA-256 and who recorded it. Below it a panel offering to hash a file in the browser and match it against the versions listed. ](/shots/delivery.jpg "The register, and the thing it is for: drop the document somebody is arguing about into the panel underneath and find out whether it is one of these.")
@@ -209,6 +313,32 @@ It is on this form because this is the moment the date is obvious and somebody i
 thinking about it. Off by default: plenty of recorded deliveries are drafts and interim versions,
 and a schedule that filled itself with retests nobody agreed to would be worse than an empty one.
 It is hidden when you are correcting an old row, because that is not a report going out.
+
+## The closeout
+
+The other end of the job, on the **Delivery** tab under the deliveries themselves — because that is
+the order it happens in: the report goes out, you talk them through it, then the retest.
+
+A kickoff has been a structured record for a while, on the proposal: when, who was there, what was
+agreed. The closeout had nowhere to go, so the call that actually decides the retest lived in
+somebody's notebook. It records:
+
+- **When, and who was there** — theirs in words, because none of those people has an account here.
+- **What was walked through.**
+- **What they disputed.** Its own field, because it is the sentence a retest starts from and a year
+  later the only record that the disagreement happened at all.
+- **What they committed to** — about the estate rather than about one finding. Per-finding dates
+  and accepted risks live on the findings.
+- **When a retest was agreed for**, if one was.
+
+It can be written after the engagement is approved. The report went out before the call happened,
+so a guard that refused edits on an approved engagement would refuse this at exactly the moment
+somebody writes it.
+
+For templates: `{{#closeout.held}}` guards the section, with `{{ closeout.notes }}`,
+`{{ closeout.disputed }}`, `{{ closeout.commitments }}` and `{{ closeout.retestOn }}` inside
+it — and `{{#closeout.hasDisputed}}` where a heading should go only if there is something under
+it. A retest report usually opens with this.
 
 ## A copy for each recipient
 

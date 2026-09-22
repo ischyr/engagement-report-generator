@@ -8,6 +8,7 @@ import {
   ListPlus,
   MessageSquarePlus,
   Plus,
+  ServerCog,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -121,21 +122,33 @@ export default function TestChecksTab({ audit, editable, onReload, onPatchRow })
   const [presetOpen, setPresetOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ title: '', category: '', description: '' });
+  /** Which check's per-host list is open. One at a time: these lists are long. */
+  const [hostsFor, setHostsFor] = useState(null);
 
   /**
-   * Everybody on the engagement, for handing a check to one of them.
+   * Every address in the scope, which is what a check can be tracked against.
    *
-   * From the audit rather than `/users`: only members can be given a check — the server
-   * refuses anybody else — so offering the whole instance would be an invitation to a 400.
+   * The same `ip || hostname` identity the server keys on — see `hostKey`. Hosts are subdocuments
+   * with no id, so the address is the only thing either side can agree on.
    */
-  const team = useMemo(() => {
+  const scopeHosts = useMemo(() => {
     const seen = new Map();
-    for (const member of [audit.creator, ...(audit.collaborators ?? []), ...(audit.reviewers ?? [])]) {
-      const id = String(member?._id ?? member ?? '');
-      if (id && !seen.has(id)) seen.set(id, member);
+    for (const group of audit.scope ?? []) {
+      for (const host of group.hosts ?? []) {
+        const key = String(host.ip || host.hostname || '').trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.set(key, {
+          key,
+          label: host.hostname || host.ip,
+          detail: host.hostname && host.ip ? host.ip : '',
+          /* A host nobody reached is worth showing differently from one that was tested. */
+          status: host.status ?? 'pending',
+        });
+      }
     }
-    return [...seen.values()].filter((member) => typeof member === 'object');
-  }, [audit.creator, audit.collaborators, audit.reviewers]);
+    return [...seen.values()];
+  }, [audit.scope]);
+
   const [busyId, setBusyId] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [clearOpen, setClearOpen] = useState(false);
@@ -190,6 +203,69 @@ export default function TestChecksTab({ audit, editable, onReload, onPatchRow })
     // The preflight panel counts unticked checks, so keep the audit in step.
     await onReload?.({ quiet: true });
   };
+
+  /**
+   * Ticking one host on one check.
+   *
+   * Its own endpoint, because it is a different gesture from editing a check — and because the
+   * server recomputes the check's own `done` from the hosts, which is what keeps every reader of
+   * `done` correct without knowing hosts exist.
+   */
+  const toggleHost = async (check, key, done) => {
+    setBusyId(check._id);
+    try {
+      const saved = await api.put(
+        `/audits/${audit._id}/test-checks/${check._id}/hosts/${encodeURIComponent(key)}`,
+        { done }
+      );
+      const row = saved?.check ?? saved;
+      if (row?._id) {
+        setData((current) => (current ?? []).map((c) => (c._id === row._id ? { ...c, ...row } : c)));
+        if (!onPatchRow?.('testChecks', row)) await refresh();
+      } else {
+        await refresh();
+      }
+    } catch (error) {
+      toast.fromError(error);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** Turning per-host tracking on or off for one check. An empty list turns it off. */
+  const setCheckHosts = async (check, keys) => {
+    setBusyId(check._id);
+    try {
+      const saved = await api.put(`/audits/${audit._id}/test-checks/${check._id}`, { hosts: keys });
+      if (saved?._id) {
+        setData((current) =>
+          (current ?? []).map((c) => (c._id === saved._id ? { ...c, ...saved } : c))
+        );
+        if (!onPatchRow?.('testChecks', saved)) await refresh();
+      } else {
+        await refresh();
+      }
+    } catch (error) {
+      toast.fromError(error);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /**
+   * Everybody on the engagement, for handing a check to one of them.
+   *
+   * From the audit rather than `/users`: only members can be given a check — the server
+   * refuses anybody else — so offering the whole instance would be an invitation to a 400.
+   */
+  const team = useMemo(() => {
+    const seen = new Map();
+    for (const member of [audit.creator, ...(audit.collaborators ?? []), ...(audit.reviewers ?? [])]) {
+      const id = String(member?._id ?? member ?? '');
+      if (id && !seen.has(id)) seen.set(id, member);
+    }
+    return [...seen.values()].filter((member) => typeof member === 'object');
+  }, [audit.creator, audit.collaborators, audit.reviewers]);
 
   /** Which check is having its blocking reason written, and the draft. */
   const [blockFor, setBlockFor] = useState(null);
@@ -564,7 +640,7 @@ export default function TestChecksTab({ audit, editable, onReload, onPatchRow })
               ) : null}
               <ul className="divide-y divide-line-soft">
                 {group.items.map((check) => (
-                  <li key={check._id} className="flex items-start gap-3 px-4 py-2.5">
+                  <li key={check._id} className="group/check flex items-start gap-3 px-4 py-2.5">
                     {/* The tick is the whole point, so it gets a big hit area. */}
                     <button
                       type="button"
@@ -597,6 +673,90 @@ export default function TestChecksTab({ audit, editable, onReload, onPatchRow })
                         <p className="mt-0.5 text-xs leading-relaxed text-fg-subtle">
                           {check.description}
                         </p>
+                      ) : null}
+
+                      {/*
+                        Per-host coverage, when this check is tracked that way.
+
+                        The line is the point: "tested on 2 of 3" is the sentence a checklist could
+                        not previously say, and the one a coverage section in the report needs. The
+                        tick above is read-only for these — it ticks itself when the last host does,
+                        which is what keeps `done` meaning the same thing it always did.
+                      */}
+                      {(check.hosts ?? []).length ? (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setHostsFor(hostsFor === check._id ? null : check._id)}
+                            className="flex items-center gap-1.5 text-[0.6875rem] text-fg-muted transition hover:text-fg"
+                          >
+                            <ServerCog size={11} className="shrink-0" />
+                            {check.hosts.filter((h) => h.done).length} of {check.hosts.length} hosts
+                            {hostsFor === check._id ? ' — hide' : ''}
+                          </button>
+                          {hostsFor === check._id ? (
+                            <ul className="mt-1.5 flex flex-col gap-1 border-l-2 border-line pl-2.5">
+                              {check.hosts.map((host) => (
+                                <li key={host.key} className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    role="checkbox"
+                                    aria-checked={host.done}
+                                    aria-label={`Mark ${host.key} as ${host.done ? 'not tested' : 'tested'}`}
+                                    disabled={!canWrite || busyId === check._id}
+                                    onClick={() => toggleHost(check, host.key, !host.done)}
+                                    className={cn(
+                                      'grid size-4 shrink-0 place-items-center rounded ring-1 transition',
+                                      host.done
+                                        ? 'bg-low/20 text-low ring-low/40'
+                                        : 'ring-line hover:bg-white/5',
+                                      !canWrite && 'cursor-not-allowed opacity-60'
+                                    )}
+                                  >
+                                    {host.done ? <Check size={10} /> : null}
+                                  </button>
+                                  <span
+                                    className={cn(
+                                      'font-mono text-[0.6875rem]',
+                                      host.done ? 'text-fg-muted' : 'text-fg'
+                                    )}
+                                  >
+                                    {host.key}
+                                  </span>
+                                  {host.result ? (
+                                    <span className="min-w-0 truncate text-[0.6875rem] text-fg-subtle">
+                                      — {host.result}
+                                    </span>
+                                  ) : null}
+                                </li>
+                              ))}
+                              {canWrite ? (
+                                <li className="mt-0.5">
+                                  <button
+                                    type="button"
+                                    className="text-[0.6875rem] text-fg-subtle transition hover:text-fg-muted"
+                                    onClick={() => setCheckHosts(check, [])}
+                                  >
+                                    stop tracking this per host
+                                  </button>
+                                </li>
+                              ) : null}
+                            </ul>
+                          ) : null}
+                        </div>
+                      ) : canWrite && scopeHosts.length > 1 ? (
+                        /*
+                          Offered only where it would mean something: an engagement with one host
+                          in scope has nothing to split a check across, and a button saying so on
+                          every row of a 120-item list is noise on every row.
+                        */
+                        <button
+                          type="button"
+                          className="mt-1 text-[0.6875rem] text-fg-subtle opacity-0 transition hover:text-fg-muted focus:opacity-100 group-hover/check:opacity-100"
+                          onClick={() => setCheckHosts(check, scopeHosts.map((h) => h.key))}
+                        >
+                          track per host
+                        </button>
                       ) : null}
 
                       {/*

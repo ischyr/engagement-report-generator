@@ -34,6 +34,7 @@ Presentation applied to every generated document, unless a client overrides it:
 | **Code block theme** | How code panes are drawn |
 | **Severity colours** | The five, as hex |
 | **Image borders** | On or off, and the colour |
+| **One finding per page** | Every write-up starts at the top of a page |
 | **Refresh fields on open** | Whether Word repopulates the table of contents when the client opens it |
 
 That last one is the answer to *"the last report had a table of contents and this one does not"* —
@@ -84,6 +85,77 @@ It has [a page of its own](/email).
 Captions are numbered — *"Figure 7 — The request"* — and a sentence in the prose can point at one.
 Both are Word fields, so the client's own edits renumber correctly. Switch it off, or change the
 word, if your template does its own numbering. [More on the evidence page](/evidence).
+
+### Tables
+
+The same, on Word's own *separate* counter: a table you have named prints as *"Table 3 — Hosts in
+scope"*, and Table 3 can sit on the same page as Figure 7 with neither number wrong. Own setting,
+own word, because the two have different answers — a house whose template numbers its figures may
+still want its tables numbered, and a report with three screenshots and eleven tables cares about
+this one far more.
+
+Only tables you have **named** are numbered. In the editor, put the cursor in a table and press
+**Caption**; the line that appears above it is the name. A table with no caption is left exactly as
+it is, which is right for the two-row comparison inside a sentence — numbering those would produce
+*"Table 14"* for something no reader will ever look up.
+
+One table names itself: the one the report builds from a step's tool output. Nobody writes that
+one, so it takes the step's own words — the tool and what it was pointed at.
+
+### One finding per page
+
+Plenty of houses want every write-up to begin at the top of a page. It is a decision about the
+firm rather than about one template, so it is a checkbox here rather than something to remember to
+do to every .docx on the instance and to the next one somebody uploads.
+
+It is done to the template, just before it is filled: the first paragraph of the findings loop —
+your finding heading, normally — is given Word's **Page break before** property, and every repeat
+of that paragraph inherits it. That is the same thing you would tick by hand in Word's paragraph
+settings, and it is deliberately not a page break *character*: a character needs a rule about the
+last one or the report ends on a blank page, where the property simply does nothing when the
+paragraph is already at the top of a page.
+
+Two consequences worth knowing:
+
+- **Your template needs a findings loop that starts with a paragraph.** Almost all do. One whose
+  loop opens straight into a table is left alone and the server log says so, rather than a break
+  being dropped inside the first cell.
+- **The summary table is safe.** Most templates loop over the findings twice — once for the
+  contents table at the front, once for the write-ups. Loops inside a table are skipped, and of
+  what remains the longest wins, so the chapter is marked and the table row is not.
+
+### Code panes
+
+Two settings under the pane's appearance, and both are about its contents rather than its frame.
+Neither applies to the **Template** theme, which exists precisely to hand the pane to your own
+`CodeBlock` style.
+
+**Colour the code** is on by default. Requests, JSON, shell commands and queries are coloured by
+what they are — the status code, the header names, the flags on a command. Nothing moves: the text
+is identical either way, in the same font at the same size, so the worst case is a pane somebody
+finds busy. Output nothing recognises stays one colour rather than being guessed at, which is most
+tool output. Turn it off for a house style that wants one ink, or for readers who print in
+greyscale and would rather have contrast than hue.
+
+**Number the lines** is off by default, and for a reason the other presentation settings do not
+have: a reader who selects a pane in Word to copy a command out of it gets the numbers too. Worth
+paying when your prose says *"line 14"*; not worth paying for a three-line curl.
+
+A pane that **skips** lines numbers itself whatever this says. That is not the setting being
+overridden — it is the pane refusing to claim that lines 1–40 and line 187 ran one after another.
+See [marking a line](/enumeration).
+
+**A line too wide for the column wraps where we put the break, not where Word would.** Panes are
+drawn as two columns — the numbers beside the code — and the two only line up because they carry
+the same number of lines. A line Word decided to wrap gained a row on one side and not the other,
+so from the first long line down every number sat beside the wrong line. Since a long line is a
+base64 payload, a curl with a token in it or a sqlmap command, that was most panes. The break is
+now placed deliberately, at the column, with a blank in the gutter opposite each continuation — a
+genuinely empty line still carries its own number, which is what tells the two apart.
+
+Tabs are printed as the spaces a terminal would have shown, on eight-column stops, for the same
+reason: a tab in a fixed-width table cell lands on whatever stops the document defines, which is
+never the ones the tool that wrote it assumed.
 
 ## Assistant
 

@@ -44,6 +44,18 @@ Wait a few minutes and it clears on its own. If you hit it repeatedly during rea
 is one constant — `renderLimiter`, in `server/src/routes/audits.routes.js`, beside the two routes it
 guards.
 
+## A page says "This page stopped"
+
+Something in that page threw an error and the app took it down rather than draw half of it. The
+rest is still running: the navigation still works, and nothing already saved is affected.
+
+**Try again** first — a page that failed on a bad response usually comes back. **Reload** second,
+because it costs anything typed and not saved.
+
+The message and the component it came from are shown in full, and are also in the browser's
+console. They are not sent anywhere: this is a self-hosted app, and an error reporter would be a
+decision to send a client's data to a third party.
+
 ## Word refuses to open the report
 
 > Word experienced an error trying to open the file. Check the file permissions… make sure there is

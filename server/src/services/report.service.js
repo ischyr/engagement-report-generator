@@ -32,9 +32,10 @@ import { resolveOutputNotes } from './enumeration-notes.service.js';
 
 import { resolveVars } from './enumeration-vars.service.js';
 import { htmlToOoxml } from './ooxml/html2ooxml.js';
+import { listOfCaptions } from './ooxml/figure-fields.js';
 import { htmlHasContent, htmlToPlainText } from './ooxml/html-parser.js';
 import { sanitizeHtml } from './html-report.service.js';
-import { chartBlockHtml } from './chart.service.js';
+import { chartBlockHtml, rankedTableHtml } from './chart.service.js';
 import { loadMediaMap, mediaIdsInAudit } from './media.service.js';
 import { formatDate } from './template-parser.js';
 import {
@@ -42,6 +43,7 @@ import {
   findingSeverity,
   describeMetrics,
   severityColor,
+  orderFindings,
   PRIORITY_LABELS,
   COMPLEXITY_LABELS,
 } from './cvss.js';
@@ -127,6 +129,101 @@ const escapeForPre = (value) =>
 const ownHtml = (html) => html;
 
 /**
+ * Which lines of a step's output the document gets, and what each printed row really is.
+ *
+ * The app always keeps every line; this decides what is *printed*. `head` keeps the first `keep`
+ * and names the count it cut, so the reader knows the pane is an extract rather than the whole
+ * answer — a silently truncated sweep reads as a complete one.
+ *
+ * **Marked lines survive the cut.** A step set to print its first forty lines used to drop the
+ * line somebody had gone to the trouble of marking at 187, which is exactly backwards: marking a
+ * line is the operator saying *this one*, and the truncation was throwing away the only line they
+ * had pointed at. So the kept set is the head plus every marked line, and the gaps between are
+ * spelled out rather than closed over.
+ *
+ * A row's `n` is its real 1-based line number; `n === 0` is a notice this function wrote rather
+ * than a line the tool printed. The distinction is what lets the gutter number the pane honestly —
+ * a notice given a line number of its own would put every number after it one out.
+ *
+ * Pure, and takes the lines rather than the step, because the rule it encodes is the one thing in
+ * the pane that can be wrong without looking wrong.
+ *
+ * @param {string[]} lines
+ * @param {{mode?:string, keep?:number, marked?:number[]}} options
+ * @returns {{rows:{n:number,text:string}[], kept:Set<number>, omitted:number}}
+ */
+export function paneRows(lines, { mode = 'all', keep = 40, marked = [] } = {}) {
+  if (mode === 'none' || mode === 'table') {
+    return { rows: [], kept: new Set(), omitted: 0 };
+  }
+
+  const inRange = marked.filter((line) => Number.isInteger(line) && line >= 1 && line <= lines.length);
+  const kept = new Set(
+    mode === 'head'
+      ? [...Array(Math.max(0, Math.min(Math.max(1, keep), lines.length))).keys()]
+          .map((index) => index + 1)
+          .concat(inRange)
+      : lines.map((_line, index) => index + 1)
+  );
+
+  const rows = [];
+  let previous = 0;
+  for (let n = 1; n <= lines.length; n += 1) {
+    if (!kept.has(n)) continue;
+    const gap = n - previous - 1;
+    /* "more" only when there is nothing after it, which there is not, here in the middle. */
+    if (gap > 0) rows.push({ n: 0, text: `… ${gap} lines not printed` });
+    rows.push({ n, text: lines[n - 1] });
+    previous = n;
+  }
+  const trailing = lines.length - previous;
+  if (trailing > 0) rows.push({ n: 0, text: `… ${trailing} more lines not printed` });
+
+  return { rows, kept, omitted: lines.length - kept.size };
+}
+
+/**
+ * A run of line numbers, written the short way: `[1,2,3,0,187]` becomes `1-3,0,187`.
+ *
+ * The pane tells the converter which real line each of its rows is, and on a four-hundred line
+ * sweep printed whole that list is four hundred numbers. As ranges it is one, which matters
+ * because it travels as an HTML attribute through a template and back out — and an attribute two
+ * kilobytes long for a pane nobody truncated is a cost paid by every step in the report.
+ *
+ * Zeroes are never merged into a range. A zero is a notice this file wrote rather than a line of
+ * output, and two of them in a row are two separate notices about two separate gaps.
+ */
+export function compactRanges(numbers) {
+  const parts = [];
+  let start = null;
+  let previous = null;
+
+  const flush = () => {
+    if (start === null) return;
+    parts.push(start === previous ? String(start) : `${start}-${previous}`);
+    start = null;
+  };
+
+  for (const n of numbers) {
+    if (n === 0) {
+      flush();
+      parts.push('0');
+      previous = null;
+      continue;
+    }
+    if (start !== null && n === previous + 1) {
+      previous = n;
+      continue;
+    }
+    flush();
+    start = n;
+    previous = n;
+  }
+  flush();
+  return parts.join(',');
+}
+
+/**
  * Whole days between a moment and now, or null when there is no moment.
  *
  * Floored, so "today" is 0 and yesterday is 1 — a report that said a sweep was 0.4 days old would
@@ -166,6 +263,11 @@ const REMEDIATION_STATUS_LABELS = {
   open: 'Not fixed',
   retesting: 'Retesting',
   fixed: 'Fixed',
+  /*
+   * "Risk accepted", not "Accepted" — which on its own reads as though somebody approved the
+   * finding. What was accepted is the risk of leaving it in place.
+   */
+  accepted: 'Risk accepted',
 };
 
 const asPlain = (html) => htmlToPlainText(html ?? '');
@@ -254,6 +356,58 @@ function numberFiguresAcross(source, fields, prefix) {
 }
 
 /**
+ * A reference to another finding, written in the prose as a chip.
+ *
+ * `<span data-findingref="<finding id>">VULN-04 — Stored XSS</span>`, produced by the editor. The
+ * text inside is what the author saw while writing; the id is what survives renumbering.
+ */
+const FINDING_REFERENCE = /<span\b[^>]*\bdata-findingref="([0-9a-f]{24})"[^>]*>([\s\S]*?)<\/span>/gi;
+
+/** What a reference to a finding that is no longer in the report says instead. */
+export const MISSING_FINDING = '(finding removed)';
+
+/**
+ * Turns every chip into the label the finding actually carries in this document.
+ *
+ * ## Why this is text and not a Word field
+ *
+ * A figure reference is a `REF` field pointing at a bookmark, so it renumbers itself when the
+ * client edits the document. A finding reference cannot be: the bookmark would have to sit on the
+ * finding's heading, and the heading is drawn by the *template* — `{{ id }}` inside a loop — not by
+ * anything here. There is nothing to bookmark.
+ *
+ * That is a smaller loss than it sounds, and the reason is worth writing down. Figures get deleted
+ * from a .docx by the person reading it, which is exactly why their numbers have to be live.
+ * Findings get renumbered by *this app* — `POST /findings/renumber` — and never by a reader. So
+ * resolving at generation time gives a document that is right when it is produced and stays right
+ * for everything anybody actually does to it afterwards.
+ *
+ * ## Why it is done here rather than in the converter
+ *
+ * Because it is the same answer for both deliverables. Rewriting the HTML before it is converted
+ * means the .docx and the page resolve identically, out of one implementation — where putting it in
+ * `html2ooxml.js` would leave the HTML report needing its own.
+ *
+ * A reference whose finding has gone says so, visibly. Quietly deleting the words leaves a sentence
+ * that reads as though nothing is missing, which is the same argument `MISSING_FIGURE` makes.
+ *
+ * @param {string} html
+ * @param {Map<string, string>} labels finding id → the label this report prints for it
+ */
+export function resolveFindingRefs(html, labels) {
+  return String(html ?? '').replace(FINDING_REFERENCE, (_whole, id, words) => {
+    const label = labels?.get(String(id).toLowerCase());
+    if (label) return label;
+    /*
+     * The words the author wrote are dropped along with the chip, deliberately. They name a
+     * finding that is not in this report, so leaving them would assert something untrue more
+     * confidently than saying nothing.
+     */
+    return MISSING_FINDING;
+  });
+}
+
+/**
  * Builds `{ description: 'plain text', rich: { description: … } }` for an
  * object's rich-text fields.
  *
@@ -261,15 +415,75 @@ function numberFiguresAcross(source, fields, prefix) {
  * template, sanitised HTML for an HTML one. The tag names stay identical so the
  * same Tag reference — and the same finding — serves both.
  */
-function expandRichFields(source, fields, ooxmlOptions, target) {
+function expandRichFields(source, fields, ooxmlOptions, target, transform = null) {
   const plain = {};
   const rich = {};
+  const cache = new Map();
+
   for (const field of fields) {
     const html = source?.[field] ?? '';
+    /*
+     * `plain` keeps the chip's own words rather than the resolved label, and on purpose: search,
+     * the summaries and the snapshot want "VULN-04 — Stored XSS", which says what was referred to.
+     * "VULN-04" on its own is the right thing in a sentence and the wrong thing in an index.
+     */
     plain[field] = asPlain(html);
-    rich[field] = target === 'html' ? sanitizeHtml(html) : htmlToOoxml(html, ooxmlOptions);
+    /*
+     * Lazy, and memoised — because converting a field *allocates*, and a field nobody prints
+     * should not.
+     *
+     * This used to be eager, and the consequence was not a slow build. `htmlToOoxml` writes each
+     * `<img>` into the package as it goes: a file under `word/media/` and a relationship pointing
+     * at it. Doing that for a field the template never prints left the picture in the .docx with
+     * nothing referencing it — invisible in Word, and in the file all the same. The shipped NDA,
+     * permission to attack and proposal print no rich field at all, so each of them was carrying
+     * the engagement's screenshots to whoever the paperwork was addressed to.
+     *
+     * Docxtemplater reads a tag by property access, so this now runs only when the template asks,
+     * and once if it asks twice. The same reasoning the signature block and the charts already
+     * used; they were lazy for exactly this reason and these were not.
+     *
+     * `plain` stays eager: it is a string operation with nothing to allocate, and search, the
+     * summaries and the snapshot all read it whether a template does or not.
+     */
+    Object.defineProperty(rich, field, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        if (!cache.has(field)) {
+          /*
+           * `transform` is where cross-references to other findings are resolved, and it runs
+           * *here* rather than on the way in because the labels it needs are not decided until
+           * every finding has been sorted and numbered — which happens after this object is built.
+           *
+           * Only possible because the conversion is lazy. If these ever go back to being eager,
+           * the references go with them.
+           */
+          const resolved = transform ? transform(html) : html;
+          cache.set(
+            field,
+            target === 'html' ? sanitizeHtml(resolved) : htmlToOoxml(resolved, ooxmlOptions)
+          );
+        }
+        return cache.get(field);
+      },
+    });
   }
   return { plain, rich };
+}
+
+/**
+ * Adds properties to a lazy object without asking it for its values.
+ *
+ * `{ ...rich, more }` reads every getter on `rich` to copy it, which is precisely what the
+ * laziness above exists to avoid — one spread and every field is converted again, media and all.
+ * Copying the *descriptors* moves the getters themselves.
+ */
+function withRich(base, extra) {
+  return Object.defineProperties(
+    {},
+    { ...Object.getOwnPropertyDescriptors(base), ...Object.getOwnPropertyDescriptors(extra) }
+  );
 }
 
 /** References as a list, in whichever markup the target speaks. */
@@ -384,6 +598,16 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
   const cvssColors = pub.cvssColors ?? {};
   const dateFormat = pub.dateFormat ?? 'yyyy-MM-dd';
   const prefix = pub.findingIdPrefix ?? '';
+
+  /**
+   * Resolves a chip pointing at another finding, when the field is asked for.
+   *
+   * Declared up here and closing over `findingLabels`, which is filled in further down — after the
+   * findings have been sorted and numbered, because that is when a finding's label is decided.
+   * Every field is converted lazily, so by the time this runs the map is complete. See
+   * `resolveFindingRefs`.
+   */
+  const refs = (html) => resolveFindingRefs(html, findingLabels);
 
   /**
    * What to call a severity in *this* report.
@@ -501,6 +725,9 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
   /** The same arrangement for the severity charts — see the getters, and `chart.service.js`. */
   let severityChartBlock;
   let severityBarBlock;
+  let remediationChartBlock;
+  let categoryChartBlock;
+  let typeChartBlock;
 
   const history = options.history ?? new Map();
   const historyFor = (id) =>
@@ -528,7 +755,17 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
   }
 
   /* --------------------------------- findings -------------------------------- */
-  const rawFindings = Array.isArray(audit.findings) ? [...audit.findings] : [];
+  /*
+   * In print order *before* anything is built from them, rather than after.
+   *
+   * Not only tidier: `position` below is the fallback identifier for a finding written before
+   * identifiers were allocated reliably, and sorting afterwards meant that fallback was the
+   * finding's place in the stored array while its printed id was its place in the document. The
+   * same finding could head its figures "3." and carry the heading VULN-05.
+   */
+  const rawFindings = orderFindings(Array.isArray(audit.findings) ? audit.findings : [], {
+    manual: audit.sortFindings === false,
+  });
 
   const findings = rawFindings.map((finding, position) => {
     const raw = typeof finding.toObject === 'function' ? finding.toObject() : finding;
@@ -547,19 +784,23 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
       FINDING_RICH_FIELDS,
       `${source.identifier ?? position + 1}.`
     );
-    const { plain, rich } = expandRichFields(numbered, FINDING_RICH_FIELDS, ooxmlOptions, target);
+    const { plain, rich } = expandRichFields(numbered, FINDING_RICH_FIELDS, ooxmlOptions, target, refs);
     const custom = customFieldMap(source.customFields);
 
     return {
       ...source,
       ...plain,
-      rich: {
-        ...rich,
+      /* `withRich`, not a spread: a spread would read every getter and undo the laziness. */
+      rich: withRich(rich, {
         // References read best as a bullet list.
-        references: richReferences(source.references, ooxmlOptions, target),
+        get references() {
+          return richReferences(source.references, ooxmlOptions, target);
+        },
         // Formatted values for any editor-type custom fields on this finding.
-        custom: customFieldRich(source.customFields, ooxmlOptions, target),
-      },
+        get custom() {
+          return customFieldRich(source.customFields, ooxmlOptions, target);
+        },
+      }),
       references: source.references ?? [],
       referencesText: (source.references ?? []).join('\n'),
 
@@ -634,6 +875,37 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
       isOpen: (source.remediationStatus ?? 'open') === 'open',
       isRetesting: source.remediationStatus === 'retesting',
       isFixed: source.remediationStatus === 'fixed',
+      /**
+       * The client decided to live with it: `{{#isAccepted}}`.
+       *
+       * Deliberately not a kind of `isFixed`. The vulnerability is still there — what changed is
+       * that somebody chose not to change it — and a template that treated the two alike would
+       * print "resolved at retest" over an issue that is still exploitable.
+       *
+       * `riskAccepted` carries the words, the name and the dates, because a status that says a
+       * client accepted something and cannot say who or why is the sentence a client disputes.
+       */
+      isAccepted: source.remediationStatus === 'accepted',
+      riskAccepted: {
+        reason: source.riskAcceptance?.reason ?? '',
+        by: source.riskAcceptance?.acceptedBy ?? '',
+        at: source.riskAcceptance?.acceptedAt
+          ? formatDate(source.riskAcceptance.acceptedAt, dateFormat)
+          : '',
+        reviewOn: source.riskAcceptance?.reviewOn
+          ? formatDate(source.riskAcceptance.reviewOn, dateFormat)
+          : '',
+        hasReview: Boolean(source.riskAcceptance?.reviewOn),
+      },
+      /**
+       * Whether anything still has to be done about it.
+       *
+       * The question a retest section actually asks, and the reason it is a flag of its own rather
+       * than `!isFixed`: an accepted risk is outstanding as a *vulnerability* and closed as a
+       * *task*, and a report that conflated them would either chase a client about a decision they
+       * already made or quietly drop a live issue off the list.
+       */
+      needsWork: !['fixed', 'accepted'].includes(source.remediationStatus ?? 'open'),
 
       /** 0 for Critical … 4 for Informational — for sorting and comparisons. */
       severityIndex: SEVERITY_ORDER.indexOf(rated.severity),
@@ -682,16 +954,8 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
       remediationStatus: source.remediationStatus ?? 'open',
       remediationStatusLabel: REMEDIATION_STATUS_LABELS[source.remediationStatus ?? 'open'],
       custom,
-      _sortScore: rated.sortScore,
-      _sortIndex: source.sortIndex ?? 0,
     };
   });
-
-  if (audit.sortFindings !== false) {
-    findings.sort((a, b) => b._sortScore - a._sortScore || a.title.localeCompare(b.title));
-  } else {
-    findings.sort((a, b) => a._sortIndex - b._sortIndex);
-  }
 
   /*
    * `id` comes from the finding's stored identifier, never from its position.
@@ -713,9 +977,19 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     finding.id = `${prefix}${String(finding.identifier).padStart(2, '0')}`;
     /** The positional label, for "finding 3 of 12" phrasing. */
     finding.positionId = `${prefix}${String(number).padStart(2, '0')}`;
-    delete finding._sortScore;
-    delete finding._sortIndex;
   });
+
+  /*
+   * What each finding is called in *this* document, for the references that point at one.
+   *
+   * Built here because this is the loop that decides it: the label depends on the stored
+   * identifier, on the instance's prefix, and on the legacy fallback above — and a reference that
+   * computed it a second way would disagree with the heading it points at the first time an
+   * engagement predating identifiers was reported on.
+   */
+  const findingLabels = new Map(
+    findings.map((finding) => [String(finding._id).toLowerCase(), finding.id])
+  );
 
   const bySeverity = (severity) => findings.filter((f) => f.severity === severity);
   const counts = {
@@ -733,7 +1007,16 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
   counts.fixed = byStatus('fixed');
   counts.retesting = byStatus('retesting');
   counts.open = byStatus('open');
+  counts.accepted = byStatus('accepted');
   counts.notFixed = counts.open;
+  /*
+   * How many are still somebody's to do — open plus retesting, and *not* the accepted ones.
+   *
+   * `notFixed` stays exactly what it was, because templates print it and its meaning must not
+   * change under them. This is the number a retest summary wants: an accepted risk is not work
+   * outstanding, and counting it as such asks a client about a decision they have already made.
+   */
+  counts.outstanding = counts.open + counts.retesting;
 
   /**
    * Issues this client has been told about before and still has.
@@ -751,17 +1034,34 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     // within it. Evidence overwhelmingly lives on findings, so two sections each
     // holding a "Figure 1" is a wart worth accepting to keep the labels stable.
     const numbered = numberFiguresAcross(source, SECTION_RICH_FIELDS, '');
-    const { plain, rich } = expandRichFields(numbered, SECTION_RICH_FIELDS, ooxmlOptions, target);
+    const { plain, rich } = expandRichFields(numbered, SECTION_RICH_FIELDS, ooxmlOptions, target, refs);
     return {
       ...source,
       ...plain,
-      rich: { ...rich, custom: customFieldRich(source.customFields, ooxmlOptions, target) },
+      rich: withRich(rich, {
+        get custom() {
+          return customFieldRich(source.customFields, ooxmlOptions, target);
+        },
+      }),
       custom: customFieldMap(source.customFields),
     };
   });
   /** `{{@sections.executive_summary.rich.text}}` — direct access by field name. */
   const sectionsByField = {};
   for (const section of sectionList) sectionsByField[section.field] = section;
+
+  /**
+   * The body and the back of the report, as two loops.
+   *
+   * `sectionList` keeps every section in its own order and is unchanged — templates print it and
+   * must not shift under them. These are the same sections split by the flag, so a template can
+   * put the reference material after the findings instead of wherever it happened to be written.
+   *
+   * The order inside each is still the order the sections are in, because that is a decision
+   * somebody made on the page and this is not the place to second-guess it.
+   */
+  const bodySections = sectionList.filter((section) => !section.appendix);
+  const appendices = sectionList.filter((section) => section.appendix);
 
   /* ------------------------------- enumeration ------------------------------- */
   /*
@@ -802,7 +1102,7 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     const body = bodyFor(source._id);
     const merged = { ...source, output: body?.output ?? source.output ?? '', content: body?.content ?? source.content ?? '' };
     const numbered = numberFiguresAcross(merged, ENUMERATION_RICH_FIELDS, '');
-    const { plain, rich } = expandRichFields(numbered, ENUMERATION_RICH_FIELDS, ooxmlOptions, target);
+    const { plain, rich } = expandRichFields(numbered, ENUMERATION_RICH_FIELDS, ooxmlOptions, target, refs);
     const output = String(merged.output ?? '');
 
     /*
@@ -830,13 +1130,37 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     const mode = source.printOutput ?? 'all';
     const lines = output ? output.replace(/\s+$/, '').split(/\r?\n/) : [];
     const keep = Math.max(1, Number(source.printLines) || 40);
-    const omitted = mode === 'head' ? Math.max(0, lines.length - keep) : 0;
-    const printed =
-      mode === 'none' || mode === 'table'
-        ? ''
-        : mode === 'head'
-          ? [...lines.slice(0, keep), ...(omitted ? [`… ${omitted} more lines not printed`] : [])].join('\n')
-          : output;
+
+    /*
+     * The lines somebody marked, and what they said about them.
+     *
+     * Resolved before the print policy, because the policy has to know about them: a step set to
+     * print its first forty lines used to drop the line somebody had gone to the trouble of marking
+     * at 187, which is exactly backwards — marking a line is the operator saying *this one*.
+     *
+     * Printed with the line's own text, not just its number, and that is the point: a callout
+     * reading "line 187" is useless beside a pane that prints forty lines of four hundred.
+     *
+     * Stale notes are dropped from the document and only from the document. On the page they are
+     * shown and flagged, because "this host is no longer in the sweep" is worth knowing; in a report
+     * a note pointing at a line that is not there would be a footnote to nothing.
+     */
+    const notes = resolveOutputNotes(output, source.notes)
+      .filter((note) => !note.stale && String(note.text ?? '').trim())
+      .map((note) => ({
+        line: note.line,
+        text: note.text,
+        snippet: note.snippet,
+        moved: Boolean(note.moved),
+      }));
+
+    const marked = [...new Set(notes.map((note) => note.line))].sort((a, b) => a - b);
+    const { rows, kept, omitted } = paneRows(lines, { mode, keep, marked });
+
+    const printed = rows.map((row) => row.text).join('\n');
+    /* Compact enough to sit in an attribute: `1-40,0,187,0,203-205`. */
+    const lineNumbers = compactRanges(rows.map((row) => row.n));
+    const markedPrinted = marked.filter((line) => kept.has(line));
 
     /*
      * The table obeys the same policy.
@@ -856,26 +1180,6 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     const printOmitted = printsTable ? tableOmitted : omitted;
     const wroteUp = (source.ledTo ?? []).map((id) => findingTitles.get(String(id))).filter(Boolean);
 
-    /*
-     * The lines somebody marked, and what they said about them.
-     *
-     * Printed with the line's own text, not just its number, and that is the point: a callout
-     * reading "line 187" is useless beside a pane that prints forty lines of four hundred. Carrying
-     * the text means the note survives the print policy — the marked line reaches the reader even
-     * when the pane it came from does not.
-     *
-     * Stale notes are dropped from the document and only from the document. On the page they are
-     * shown and flagged, because "this host is no longer in the sweep" is worth knowing; in a report
-     * a note pointing at a line that is not there would be a footnote to nothing.
-     */
-    const notes = resolveOutputNotes(output, source.notes)
-      .filter((note) => !note.stale && String(note.text ?? '').trim())
-      .map((note) => ({
-        line: note.line,
-        text: note.text,
-        snippet: note.snippet,
-        moved: Boolean(note.moved),
-      }));
     /* Rows as objects too, so `{{#table.rows}}` can be walked by a template that wants to. */
     /*
      * Built from the capped parse, not the full one.
@@ -946,6 +1250,17 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
       hasOutput: printed.trim().length > 0,
       /** The whole thing regardless of policy, for a template that wants to decide for itself. */
       outputFull: output,
+      /**
+       * The pane as it will print, and which real line each of its rows is.
+       *
+       * `{{#outputRows}}{{ .n }} {{ .text }}{{/outputRows}}` for a template that would rather draw
+       * the pane itself than take `{{@rich.output}}`. `n` is 0 on a row this file wrote — the
+       * "… 146 lines not printed" notice — which is the one thing a template cannot work out from
+       * the text, and what stops a hand-drawn gutter numbering a notice as though it were evidence.
+       */
+      outputRows: rows,
+      /** The lines somebody marked that this pane actually shows, so prose can point at one. */
+      markedLines: markedPrinted,
       outputLines: lines.length,
       outputTruncated: omitted > 0,
       outputOmitted: omitted,
@@ -989,8 +1304,8 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
       notes,
       hasNotes: notes.length > 0,
       noteCount: notes.length,
-      rich: {
-        ...rich,
+      /* `withRich`, not a spread — see `expandRichFields`. A step's `content` holds screenshots. */
+      rich: withRich(rich, {
         /*
          * The output as a real code pane.
          *
@@ -1000,7 +1315,23 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
          */
         get output() {
           if (!printed.trim()) return htmlToOoxml('', ooxmlOptions);
-          const html = `<pre><code>${escapeForPre(printed)}</code></pre>`;
+          /*
+           * What the pane knows about itself, handed to the converter as attributes.
+           *
+           * `data-line-numbers` so a pane that skips can say which lines it skipped, and
+           * `data-mark-lines` so the lines somebody marked are picked out in the pane and not only
+           * listed under it. Both are optional and both are ignored by a converter that does not
+           * want them — see `#codeBlock`.
+           *
+           * No `data-language`: nothing here knows one. The step has a tool name, and mapping
+           * "curl" to HTTP would be a guess that is wrong the first time somebody pastes a shell
+           * transcript into a step called curl. The converter sniffs the first line instead, which
+           * is right when it is sure and silent when it is not.
+           */
+          const attributes =
+            ` data-line-numbers="${lineNumbers}"` +
+            (markedPrinted.length ? ` data-mark-lines="${markedPrinted.join(',')}"` : '');
+          const html = `<pre${attributes}><code>${escapeForPre(printed)}</code></pre>`;
           return target === 'html' ? ownHtml(html) : htmlToOoxml(html, ooxmlOptions);
         },
         /*
@@ -1012,7 +1343,17 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
          */
         get outputTable() {
           if (!parsed || mode === 'none') return htmlToOoxml('', ooxmlOptions);
-          const html = tableToHtml(parsed);
+          /*
+           * What the table is, in the step's own words: the tool, and what it was pointed at.
+           *
+           * The step's title is the fallback because a step always has one, and "Table 4 — Subdomain
+           * sweep" places the rows for a reader who has not read the paragraph above them. Nothing
+           * is invented: every part of this was typed by the operator.
+           */
+          const caption =
+            [source.tool, source.target].map((part) => String(part ?? '').trim()).filter(Boolean).join(' — ') ||
+            String(source.title ?? '').trim();
+          const html = tableToHtml(parsed, caption);
           return target === 'html' ? ownHtml(html) : htmlToOoxml(html, ooxmlOptions);
         },
         /*
@@ -1033,7 +1374,7 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
             .join('')}</ul>`;
           return target === 'html' ? ownHtml(html) : htmlToOoxml(html, ooxmlOptions);
         },
-      },
+      }),
     };
   });
 
@@ -1166,6 +1507,30 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
               raw.doneBy.username
             : '',
         verifiedOn: raw.doneAt ? formatDate(raw.doneAt, dateFormat) : '',
+        /**
+         * The same check, per host, when it was tracked that way.
+         *
+         * Empty for an ordinary engagement-wide check, which is most of them — so a template can
+         * guard with `{{#hasHosts}}` and print the one line it always printed otherwise.
+         *
+         * This is the sentence a coverage section could not previously write: not "we tested for
+         * authentication bypass", but "we tested for it on these nine of the twelve, and here is
+         * what each one gave". `coverage` says it in words so a template does not have to compute
+         * it from two numbers.
+         */
+        hosts: (raw.hosts ?? []).map((host) => ({
+          host: host.key,
+          done: Boolean(host.done),
+          status: host.done ? 'Verified' : 'Not tested',
+          result: host.result ?? '',
+          verifiedOn: host.doneAt ? formatDate(host.doneAt, dateFormat) : '',
+        })),
+        hasHosts: (raw.hosts ?? []).length > 0,
+        hostCount: (raw.hosts ?? []).length,
+        hostsDone: (raw.hosts ?? []).filter((host) => host.done).length,
+        coverage: (raw.hosts ?? []).length
+          ? `${(raw.hosts ?? []).filter((host) => host.done).length} of ${(raw.hosts ?? []).length} hosts`
+          : '',
         order: raw.order ?? 0,
       };
     })
@@ -1268,6 +1633,19 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     return htmlToOoxml(html, { ...ooxmlOptions, imageBorder: false });
   };
 
+  /**
+   * A drawing that is not the severity ring.
+   *
+   * Same treatment as `severityChartOf` — empty stays empty rather than becoming a stray blank
+   * paragraph, and the image border from Settings is dropped, because it exists to frame a
+   * screenshot against the page and a hairline box around a chart reads as a mistake.
+   */
+  const drawing = (html) => {
+    if (target === 'html') return sanitizeHtml(html);
+    if (!html) return htmlToOoxml('', ooxmlOptions);
+    return htmlToOoxml(html, { ...ooxmlOptions, imageBorder: false });
+  };
+
   const byStatusFindings = (status) => findings.filter((f) => f.remediationStatus === status);
 
   /* -------------------------------- numbers --------------------------------- */
@@ -1276,8 +1654,16 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     ? Math.round((scores.reduce((sum, n) => sum + n, 0) / scores.length) * 10) / 10
     : 0;
 
+  /*
+   * `needsWork` rather than `!isFixed`, now that a risk can be accepted.
+   *
+   * This number heads an executive summary — "three serious issues remain open". A Critical the
+   * client has formally decided to live with is still a Critical, and it is not *open*: counting it
+   * here would put a number in front of a reader that contradicts the acceptance section three
+   * pages later. `counts.accepted` says how many there are, which is the honest way to raise it.
+   */
   const openSerious = findings.filter(
-    (f) => !f.isFixed && (f.severity === 'Critical' || f.severity === 'High')
+    (f) => f.needsWork && (f.severity === 'Critical' || f.severity === 'High')
   ).length;
 
   /** The engagement's overall rating: the worst thing found. */
@@ -1616,6 +2002,31 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
      * caveats paragraph is made of — the ones marked to print. Both are already in the order they
      * were asked, which is the order they happened.
      */
+    /**
+     * The closeout call: `{{#closeout.held}}`, `{{ closeout.notes }}`.
+     *
+     * The other end of the engagement, and the half a retest report opens with — what was walked
+     * through, what they disputed, what they committed to. Nothing here is generated: every field
+     * was typed by whoever was on the call.
+     *
+     * `held` is the guard, matching `kickoff.held` on a proposal. A template can carry the section
+     * unconditionally and an engagement whose closeout has not happened prints nothing.
+     */
+    closeout: {
+      held: Boolean(audit.closeout?.at),
+      heldOn: audit.closeout?.heldOn ? formatDate(audit.closeout.heldOn, dateFormat) : '',
+      attendeesOurs: audit.closeout?.attendeesOurs ?? '',
+      attendeesTheirs: audit.closeout?.attendeesTheirs ?? '',
+      notes: asPlain(audit.closeout?.notes ?? ''),
+      disputed: audit.closeout?.disputed ?? '',
+      hasDisputed: String(audit.closeout?.disputed ?? '').trim().length > 0,
+      commitments: audit.closeout?.commitments ?? '',
+      hasCommitments: String(audit.closeout?.commitments ?? '').trim().length > 0,
+      retestOn: audit.closeout?.retestOn ? formatDate(audit.closeout.retestOn, dateFormat) : '',
+      hasRetest: Boolean(audit.closeout?.retestOn),
+      recordedBy: userSummary(audit.closeout?.by)?.fullname ?? '',
+    },
+
     questions: printedQuestions,
     allQuestions: questionList,
     assumptions: printedQuestions.filter((question) => question.isAssumed),
@@ -1647,6 +2058,20 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     },
     sections: sectionsByField,
     sectionList,
+    /**
+     * The same sections, split into what a reader reads and what they consult.
+     *
+     * `{{#bodySections}}` before the findings and `{{#appendices}}` after them, which is the
+     * arrangement every report of any length wants and none could express: the full tool output
+     * and the credential register are material a reader looks things up in, and putting them in
+     * the body pushes the findings further from the front the longer they get.
+     *
+     * `sectionList` is untouched and still holds every section in order, so a template that prints
+     * it carries on exactly as it did.
+     */
+    bodySections,
+    appendices,
+    hasAppendices: appendices.length > 0,
     /**
      * `{{#enumeration}}` — the red team's route, step by step.
      *
@@ -1705,6 +2130,24 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
         target === 'html'
           ? sanitizeHtml(scopeLog?.html ?? '')
           : htmlToOoxml(scopeLog?.html ?? '', ooxmlOptions),
+      /**
+       * A list of every figure in the report, for the front matter: `{{@rich.listOfFigures}}`.
+       *
+       * A forty-page report with eleven screenshots numbers them, and until now offered no way to
+       * find one. A reader told "as shown in Figure 7" has to page through the document looking for
+       * it; a reader who remembers a screenshot and not which finding it was in has no way back to
+       * it at all. The list is that way back, and a table of contents for evidence besides.
+       *
+       * Empty when the report has no figures, so a template can carry the tag unconditionally and
+       * a proposal with no evidence in it does not print an empty heading. The template writes its
+       * own heading above the tag — "List of figures" is a house style decision and there is no
+       * setting here for it because there does not need to be one.
+       *
+       * Nothing on the HTML page yet: it is built by the pass over `word/document.xml`, and the
+       * page is assembled a different way. `{{@rich.listOfTables}}` is the same thing for tables.
+       */
+      listOfFigures: target === 'html' ? '' : listOfCaptions('Figure'),
+      listOfTables: target === 'html' ? '' : listOfCaptions('Table'),
 
       get signatures() {
         if (signatureBlock === undefined) {
@@ -1733,6 +2176,63 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
         if (severityBarBlock === undefined) severityBarBlock = severityChartOf('bar');
         return severityBarBlock;
       },
+      /**
+       * Where the remediation stands, as a picture: `{{@rich.remediationChart}}`.
+       *
+       * The chart a retest report is actually about. The severity ring says what was found; this
+       * says what has been done about it, which is the question the second document exists to
+       * answer and the one a client reads first when they already know the findings.
+       *
+       * The colours are the app's own status colours rather than the severity palette, and
+       * deliberately: green for fixed in a document where red means Critical is the reading a
+       * client makes in one glance.
+       */
+      get remediationChart() {
+        if (remediationChartBlock === undefined) {
+          remediationChartBlock = drawing(
+            chartBlockHtml(
+              [
+                { label: REMEDIATION_STATUS_LABELS.fixed, count: counts.fixed, color: '2E7D32' },
+                { label: REMEDIATION_STATUS_LABELS.retesting, count: counts.retesting, color: 'F9A009' },
+                /*
+                 * Grey, and next to fixed rather than next to open.
+                 *
+                 * An accepted risk is closed as a piece of work and unresolved as a vulnerability,
+                 * and the colour has to say the first without implying the second — green would
+                 * claim it was dealt with, red would claim nobody had decided.
+                 */
+                { label: REMEDIATION_STATUS_LABELS.accepted, count: counts.accepted, color: '6B7280' },
+                { label: REMEDIATION_STATUS_LABELS.open, count: counts.open, color: 'D02D2D' },
+              ],
+              { kind: 'donut', alt: 'Findings by remediation status' }
+            )
+          );
+        }
+        return remediationChartBlock;
+      },
+      /**
+       * The weakness classes that keep coming back: `{{@rich.findingsByCategory}}`.
+       *
+       * Ranked rather than a ring, because a category list has a long tail — see
+       * `rankedTableHtml`. Longest first, capped, and every label is real text.
+       */
+      get findingsByCategory() {
+        if (categoryChartBlock === undefined) {
+          categoryChartBlock = drawing(
+            rankedTableHtml([...categoryCounts].map(([label, count]) => ({ label, count })))
+          );
+        }
+        return categoryChartBlock;
+      },
+      /** The same for weakness type: `{{@rich.findingsByType}}`. */
+      get findingsByType() {
+        if (typeChartBlock === undefined) {
+          typeChartBlock = drawing(
+            rankedTableHtml([...typeCounts].map(([label, count]) => ({ label, count })))
+          );
+        }
+        return typeChartBlock;
+      },
     },
 
     /* buckets + stats */
@@ -1746,6 +2246,16 @@ export function buildReportData(audit, settings, ooxmlOptions, options = {}) {
     openFindings: byStatusFindings('open'),
     retestingFindings: byStatusFindings('retesting'),
     fixedFindings: byStatusFindings('fixed'),
+    /**
+     * The ones the client decided to live with: `{{#acceptedFindings}}`.
+     *
+     * Its own loop rather than a filter inside the template, because the section it belongs in is
+     * its own section — "risks accepted by the client", with the reason beside each. A retest
+     * report that leaves this out is describing less than happened.
+     */
+    acceptedFindings: byStatusFindings('accepted'),
+    /** Open plus retesting: everything still somebody's to do. See `counts.outstanding`. */
+    outstandingFindings: findings.filter((f) => f.needsWork),
 
     /** Grouped bodies, each carrying its own nested `findings` loop. */
     findingsByCategory,
@@ -1974,7 +2484,27 @@ export async function generateReport({
   const priv = resolvedSettings.report?.private ?? {};
 
   const startedAt = Date.now();
-  await onProgress('Opening the template', 20);
+
+  /*
+   * How long each stage took.
+   *
+   * Hung off `onProgress` rather than written at each step, because the stages are already
+   * declared there and a second list of boundaries would drift from the first — the timings would
+   * then be labelled with stages that no longer match what the bar said, which is worse than no
+   * timings. Whatever was running is closed when the next stage opens, and the last one when the
+   * bytes exist.
+   */
+  const stages = {};
+  let openStage = null;
+  let stageStartedAt = Date.now();
+  const stage = async (label, percent) => {
+    if (openStage) stages[openStage] = Date.now() - stageStartedAt;
+    openStage = label;
+    stageStartedAt = Date.now();
+    await onProgress(label, percent);
+  };
+
+  await stage('Opening the template', 20);
   const { zip, parts, numbering, buffer: templateBuffer, inheritance } = await openTemplate(template);
 
   /*
@@ -1987,7 +2517,7 @@ export async function generateReport({
    * outside the engagement document, so the scan has to be told about them or the images silently
    * do not render.
    */
-  await onProgress('Fetching the evidence', 35);
+  await stage('Fetching the evidence', 35);
   const media = await loadMediaMap(
     mediaIdsInAudit(audit, {
       enumerationHtml: [...(enumerationBodies?.values() ?? [])].map((body) => body?.content ?? ''),
@@ -1995,7 +2525,7 @@ export async function generateReport({
   );
   const ooxmlOptions = ooxmlOptionsFor({ parts, numbering, media, pub, priv });
 
-  await onProgress('Laying out the report', 55);
+  await stage('Laying out the report', 55);
   const data = buildReportData(audit, resolvedSettings, ooxmlOptions, {
     user,
     templateName: template.name ?? '',
@@ -2033,7 +2563,7 @@ export async function generateReport({
    * starting it is the honest version: the message is right, and the bar sits still for as long as
    * the work takes rather than creeping to imply progress nobody is measuring.
    */
-  await onProgress('Assembling the document', 75);
+  await stage('Assembling the document', 75);
   const buffer = renderDocx({
     zip,
     parts,
@@ -2044,6 +2574,9 @@ export async function generateReport({
     provenance,
     /* The word in front of the number, so a house that says "Screenshot 4" gets to. */
     figureLabel: pub.figureLabel || 'Figure',
+    tableLabel: pub.tableLabel || 'Table',
+    /* A house style that gives every write-up its own page. Off unless somebody asked for it. */
+    findingPerPage: pub.findingPerPage === true,
   });
 
   const filename = `${safeDocName(audit.name, 'report')}${
@@ -2073,6 +2606,8 @@ export async function generateReport({
       size: buffer.length,
       outputHash: outputHash(buffer),
       ms: Date.now() - startedAt,
+      /* The last stage is closed here, where the bytes exist and nothing else is running. */
+      stages: { ...stages, [openStage]: Date.now() - stageStartedAt },
       inheritedFrom: inheritance?.from ?? '',
       inheritedParts: inheritance?.applied ?? [],
       counts: {

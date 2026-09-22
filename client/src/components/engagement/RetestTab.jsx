@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, CircleDot, Paperclip, RefreshCw, ShieldQuestion, XCircle } from 'lucide-react';
+import { CheckCircle2, CircleDot, Paperclip, RefreshCw, ShieldCheck, ShieldQuestion, XCircle } from 'lucide-react';
 
 import { api } from '../../lib/api.js';
 import { calculateCvss } from '../../lib/cvss.js';
@@ -112,6 +112,28 @@ function Row({ finding, auditId, editable, busy, onSet }) {
               </span>
             ) : null}
           </>
+        ) : finding.remediationStatus === 'accepted' && finding.riskAcceptance?.reason ? (
+          /*
+           * Why it is here and nobody is working on it.
+           *
+           * Shown in the row rather than left on the finding, because the buttons beside it can
+           * still move this one — a tester may decide the acceptance no longer holds — and doing
+           * that without the reason in front of you is overriding somebody's decision blind.
+           */
+          <>
+            <span className="mt-0.5 block text-[0.6875rem] text-fg-muted">
+              {finding.riskAcceptance.acceptedBy || 'The client'} accepted this risk
+              {finding.riskAcceptance.acceptedAt
+                ? ` on ${formatDate(finding.riskAcceptance.acceptedAt)}`
+                : ''}
+              {finding.riskAcceptance.reviewOn
+                ? ` — to be looked at again on ${formatDate(finding.riskAcceptance.reviewOn)}`
+                : ''}
+            </span>
+            <span className="mt-1 block border-l-2 border-line pl-2 text-[0.6875rem] italic leading-relaxed text-fg-muted line-clamp-3">
+              {finding.riskAcceptance.reason}
+            </span>
+          </>
         ) : moved ? (
           <span className="mt-0.5 block text-[0.6875rem] text-fg-subtle">
             Last moved {timeAgo(moved.at)}
@@ -164,12 +186,23 @@ function Row({ finding, auditId, editable, busy, onSet }) {
           ) : null}
         </span>
       ) : (
-        <Badge tone={finding.remediationStatus === 'fixed' ? 'success' : 'warning'}>
+        <Badge
+          tone={
+            finding.remediationStatus === 'fixed'
+              ? 'success'
+              : /* Neutral, not a warning: somebody decided, so there is nothing here to chase. */
+                finding.remediationStatus === 'accepted'
+                ? 'neutral'
+                : 'warning'
+          }
+        >
           {finding.remediationStatus === 'fixed'
             ? 'Fixed'
             : finding.remediationStatus === 'retesting'
               ? 'Retesting'
-              : 'Not fixed'}
+              : finding.remediationStatus === 'accepted'
+                ? 'Risk accepted'
+                : 'Not fixed'}
         </Badge>
       )}
     </li>
@@ -208,7 +241,15 @@ export default function RetestTab({ audit, editable, onReload }) {
       claimed: claimed.sort(bySeverity),
       retesting: rest.filter((f) => f.remediationStatus === 'retesting').sort(bySeverity),
       fixed: rest.filter((f) => f.remediationStatus === 'fixed').sort(bySeverity),
-      open: rest.filter((f) => f.remediationStatus === 'open').sort(bySeverity),
+      /*
+       * `open` is now the explicit value rather than "everything else".
+       *
+       * It always was, but an accepted risk would have fallen into no group at all and quietly
+       * vanished from this tab — visible nowhere, while still being a live vulnerability. It gets
+       * its own section below instead.
+       */
+      open: rest.filter((f) => (f.remediationStatus ?? 'open') === 'open').sort(bySeverity),
+      accepted: rest.filter((f) => f.remediationStatus === 'accepted').sort(bySeverity),
     };
   }, [audit.findings]);
 
@@ -280,6 +321,20 @@ export default function RetestTab({ audit, editable, onReload }) {
         title="Verified fixed"
         description="Checked by somebody here, not merely reported as fixed."
         findings={groups.fixed}
+        {...shared}
+      />
+      {/*
+        Last, and listed rather than hidden.
+
+        These are live vulnerabilities the client has decided to keep, so they are not work
+        outstanding — but a retest that showed no trace of them would be describing less than
+        happened, and the acceptance is exactly the thing somebody revisits a year later.
+      */}
+      <Group
+        icon={ShieldCheck}
+        title="Risk accepted"
+        description="Still there. The client decided to live with them — the reason is on each finding."
+        findings={groups.accepted}
         {...shared}
       />
 

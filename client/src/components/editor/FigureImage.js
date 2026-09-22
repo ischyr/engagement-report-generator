@@ -43,6 +43,24 @@ export const FigureImage = Image.extend({
           '',
         renderHTML: (attributes) => (attributes.video ? { 'data-video': attributes.video } : {}),
       },
+      /**
+       * How wide it prints, as a share of the text column.
+       *
+       * Empty means what it has always meant: the size it was captured at, shrunk if that does not
+       * fit. A 320-pixel error dialog therefore prints as a 320-pixel stamp, which is right about
+       * half the time and far too small the other half — and a wide terminal capture squeezed into
+       * the column is unreadable at any size, so the answer there is to give it a whole page of a
+       * width rather than to shrink it further.
+       *
+       * Two of these in a two-column table is how two screenshots sit beside each other; the cell
+       * is the column as far as the converter is concerned.
+       */
+      printWidth: {
+        default: null,
+        parseHTML: (element) => element.getAttribute?.('data-width') || null,
+        renderHTML: (attributes) =>
+          attributes.printWidth ? { 'data-width': String(attributes.printWidth) } : {},
+      },
       caption: {
         default: '',
         /*
@@ -88,6 +106,7 @@ export const FigureImage = Image.extend({
             alt: img.getAttribute('alt') ?? '',
             title: img.getAttribute('title') ?? '',
             video: img.getAttribute('data-video') ?? '',
+            printWidth: img.getAttribute('data-width') || null,
             caption:
               element.querySelector('figcaption')?.textContent ??
               img.getAttribute('data-caption') ??

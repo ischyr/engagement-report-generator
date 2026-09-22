@@ -188,8 +188,16 @@ export function hostBoard(audit, { detections = [], credentials = [] } = {}) {
       /** Whether anything has been written here, without shipping the text to a list view. */
       hasNotes: Boolean((host.notes ?? '').trim()),
       findings: work.findings.length,
-      /** Findings still open, because that is the number that decides what to do next. */
-      openFindings: work.findings.filter((row) => row.remediationStatus !== 'fixed').length,
+      /**
+       * Findings still open, because that is the number that decides what to do next.
+       *
+       * Neither fixed nor accepted. A risk the client has formally decided to live with is not
+       * work outstanding on this host, and counting it here would send somebody back to an asset
+       * with nothing left to do on it.
+       */
+      openFindings: work.findings.filter(
+        (row) => !['fixed', 'accepted'].includes(row.remediationStatus)
+      ).length,
       detections: work.detections.length,
       credentials: work.credentials.length,
       relatedNotes: work.relatedNotes.length,

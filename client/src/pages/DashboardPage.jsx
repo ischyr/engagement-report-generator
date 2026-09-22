@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
@@ -26,6 +27,7 @@ import { PageHeader, Stat } from '../components/ui/Misc.jsx';
 import { Badge, SeverityBadge, StateBadge } from '../components/ui/Badge.jsx';
 import { Button } from '../components/ui/Button.jsx';
 import { EmptyState, LoadingBlock } from '../components/ui/Feedback.jsx';
+import { Modal } from '../components/ui/Modal.jsx';
 import { SeverityBar, SeverityLegend } from '../components/cvss/CvssEditor.jsx';
 import ActivityHeatmap, { HeatmapLegend } from '../components/charts/ActivityHeatmap.jsx';
 
@@ -58,6 +60,190 @@ function QueueRow({ to, children, className }) {
   );
 }
 
+/**
+ * How many rows a queue shows before it stops.
+ *
+ * Five, because the dashboard's job is to say what needs you rather than to list it — a card that
+ * runs to twenty is one people scroll past on their way to the thing they came for. What is cut is
+ * not hidden: the button under it opens the whole queue.
+ */
+const SHOWN = 5;
+
+/** One engagement in "needs a look", with its reasons. */
+function AttentionRow({ row }) {
+  return (
+    <div className="rounded-lg border border-line-soft bg-canvas/40 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Link
+          to={`/engagements/${row.audit._id}`}
+          className="min-w-0 flex-1 truncate text-xs text-fg transition hover:text-brand-300"
+        >
+          {row.audit.name}
+        </Link>
+        {row.company ? (
+          <span className="truncate text-[0.625rem] text-fg-subtle">{row.company}</span>
+        ) : null}
+        <StateBadge state={row.audit.state} />
+      </div>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {row.reasons.map((reason) => {
+          const meta = LEVEL_META[reason.level] ?? LEVEL_META.note;
+          return (
+            <li key={reason.code}>
+              <Link
+                to={`/engagements/${row.audit._id}?tab=${reason.tab}`}
+                className="flex items-center gap-2 text-[0.6875rem] leading-relaxed text-fg-muted transition hover:text-fg"
+              >
+                <span className={cn('size-1.5 shrink-0 rounded-full', meta.dot)} />
+                <span className="min-w-0 flex-1 truncate">
+                  {reason.label}
+                  {/* The server keeps days out of its sentences; this is the side
+                      that knows how to write one. */}
+                  {reason.day ? ` — ${formatDate(reason.day)}` : ''}
+                </span>
+                <ArrowRight size={11} className="shrink-0 text-fg-subtle" />
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** A heading over one of the week's lists, with what is not being shown. */
+function QueueHeading({ children, shown, total }) {
+  return (
+    <p className="flex items-baseline gap-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
+      <span>{children}</span>
+      {total > shown ? (
+        <span className="font-normal normal-case tracking-normal text-fg-subtle/70">
+          showing {shown} of {total}
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
+/**
+ * Everything in your week, cut to `limit` a list.
+ *
+ * One component for the card and the dialog, differing only in that number. `*Total` is the real
+ * count from the server rather than the length of what it sent — a list the server itself capped
+ * says so, so the dialog never claims to be showing everything when it is not.
+ */
+function WeekSections({ mine, limit = Infinity }) {
+  const bookings = mine?.bookings ?? [];
+  const checks = mine?.checks ?? [];
+  const findings = mine?.findings ?? [];
+
+  return (
+    <>
+      {bookings.length ? (
+        <div className="flex flex-col gap-1.5">
+          <QueueHeading shown={Math.min(limit, bookings.length)} total={bookings.length}>
+            Booked
+          </QueueHeading>
+          <ul className="flex flex-col gap-1.5">
+            {bookings.slice(0, limit).map((booking) => (
+              <QueueRow
+                key={`${booking.audit._id}-${booking.start}`}
+                to={`/engagements/${booking.audit._id}`}
+                className={booking.current ? 'border-brand-500/30' : ''}
+              >
+                <CalendarClock size={13} className="shrink-0 text-fg-subtle" />
+                <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                  {booking.audit.name}
+                </span>
+                {booking.audit.onHold ? (
+                  <Badge tone="danger" icon={OctagonPause}>
+                    stopped
+                  </Badge>
+                ) : null}
+                <span className="text-[0.625rem] text-fg-subtle">
+                  {booking.current
+                    ? `now, until ${formatDate(booking.end)}`
+                    : `from ${formatDate(booking.start)}`}
+                </span>
+              </QueueRow>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {checks.length ? (
+        <div className="flex flex-col gap-1.5">
+          <QueueHeading shown={Math.min(limit, checks.length)} total={mine.checksTotal}>
+            Checks assigned to you
+          </QueueHeading>
+          <ul className="flex flex-col gap-1.5">
+            {checks.slice(0, limit).map((check) => (
+              <QueueRow key={check._id} to={`/engagements/${check.audit._id}?tab=checks`}>
+                <ClipboardCheck size={13} className="shrink-0 text-fg-subtle" />
+                <span className="min-w-0 flex-1 truncate text-xs text-fg">{check.title}</span>
+                <span className="truncate text-[0.625rem] text-fg-subtle">{check.audit.name}</span>
+              </QueueRow>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {findings.length ? (
+        <div className="flex flex-col gap-1.5">
+          <QueueHeading shown={Math.min(limit, findings.length)} total={mine.findingsTotal}>
+            Your findings with no evidence
+          </QueueHeading>
+          <ul className="flex flex-col gap-1.5">
+            {findings.slice(0, limit).map((finding) => (
+              <QueueRow
+                key={finding._id}
+                to={`/engagements/${finding.audit._id}/findings/${finding._id}`}
+              >
+                <SeverityBadge severity={finding.severity} score={finding.score} />
+                <span className="min-w-0 flex-1 truncate text-xs text-fg">{finding.title}</span>
+                <ImageOff size={13} className="shrink-0 text-med" />
+              </QueueRow>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {mine?.unloggedDays?.length ? (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
+            Days booked with no hours logged
+          </p>
+          {/*
+            Said plainly rather than as a chart: the effort figure the report prints is built from
+            these entries, so a gap is a thing to go and fix, not a trend.
+
+            Not cut to `limit` with the others — these are chips on one line rather than rows, so
+            the whole set costs a line or two and cutting them would save nothing worth the words.
+          */}
+          <Link
+            to="/schedule"
+            className="flex flex-wrap items-center gap-1.5 rounded-lg border border-med/25 bg-med/[0.06] px-3 py-2 transition hover:border-med/40"
+          >
+            {mine.unloggedDays.slice(0, 8).map((day) => (
+              <span
+                key={day}
+                className="rounded bg-canvas/60 px-1.5 py-0.5 font-mono text-[0.625rem] text-fg-muted"
+              >
+                {formatDate(day, { day: 'numeric', month: 'short' })}
+              </span>
+            ))}
+            {mine.unloggedDays.length > 8 ? (
+              <span className="text-[0.625rem] text-fg-subtle">
+                +{mine.unloggedDays.length - 8} more
+              </span>
+            ) : null}
+          </Link>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const { data, loading } = useResource('/dashboard', { initial: null });
@@ -73,6 +259,16 @@ export default function DashboardPage() {
 
   const totals = data?.totals;
   const mine = data?.mine;
+
+  /** Which queue is open in full. Null is the ordinary state: the cards show five each. */
+  const [showing, setShowing] = useState(null);
+
+  /* What the five on the card leave out, which is the only reason to offer the button at all. */
+  const attention = data?.attention ?? [];
+  const weekHidden =
+    Math.max(0, (mine?.bookings?.length ?? 0) - SHOWN) +
+    Math.max(0, (mine?.checks?.length ?? 0) - SHOWN) +
+    Math.max(0, (mine?.findings?.length ?? 0) - SHOWN);
 
   return (
     <div className="flex flex-col gap-6">
@@ -172,112 +368,21 @@ export default function DashboardPage() {
             </CardBody>
           ) : (
             <CardBody className="flex flex-col gap-4">
-              {mine?.bookings?.length ? (
-                <div className="flex flex-col gap-1.5">
-                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
-                    Booked
-                  </p>
-                  <ul className="flex flex-col gap-1.5">
-                    {mine.bookings.map((booking) => (
-                      <QueueRow
-                        key={`${booking.audit._id}-${booking.start}`}
-                        to={`/engagements/${booking.audit._id}`}
-                        className={booking.current ? 'border-brand-500/30' : ''}
-                      >
-                        <CalendarClock size={13} className="shrink-0 text-fg-subtle" />
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                          {booking.audit.name}
-                        </span>
-                        {booking.audit.onHold ? (
-                          <Badge tone="danger" icon={OctagonPause}>
-                            stopped
-                          </Badge>
-                        ) : null}
-                        <span className="text-[0.625rem] text-fg-subtle">
-                          {booking.current
-                            ? `now, until ${formatDate(booking.end)}`
-                            : `from ${formatDate(booking.start)}`}
-                        </span>
-                      </QueueRow>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
+              <WeekSections mine={mine} limit={SHOWN} />
 
-              {mine?.checks?.length ? (
-                <div className="flex flex-col gap-1.5">
-                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
-                    Checks assigned to you · {mine.checksTotal}
-                  </p>
-                  <ul className="flex flex-col gap-1.5">
-                    {mine.checks.map((check) => (
-                      <QueueRow
-                        key={check._id}
-                        to={`/engagements/${check.audit._id}?tab=checks`}
-                      >
-                        <ClipboardCheck size={13} className="shrink-0 text-fg-subtle" />
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                          {check.title}
-                        </span>
-                        <span className="truncate text-[0.625rem] text-fg-subtle">
-                          {check.audit.name}
-                        </span>
-                      </QueueRow>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              {mine?.findings?.length ? (
-                <div className="flex flex-col gap-1.5">
-                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
-                    Your findings with no evidence · {mine.findingsTotal}
-                  </p>
-                  <ul className="flex flex-col gap-1.5">
-                    {mine.findings.map((finding) => (
-                      <QueueRow
-                        key={finding._id}
-                        to={`/engagements/${finding.audit._id}/findings/${finding._id}`}
-                      >
-                        <SeverityBadge severity={finding.severity} score={finding.score} />
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                          {finding.title}
-                        </span>
-                        <ImageOff size={13} className="shrink-0 text-med" />
-                      </QueueRow>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              {mine?.unloggedDays?.length ? (
-                <div className="flex flex-col gap-1.5">
-                  <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-subtle">
-                    Days booked with no hours logged
-                  </p>
-                  {/*
-                    Said plainly rather than as a chart: the effort figure the report prints is
-                    built from these entries, so a gap is a thing to go and fix, not a trend.
-                  */}
-                  <Link
-                    to="/schedule"
-                    className="flex flex-wrap items-center gap-1.5 rounded-lg border border-med/25 bg-med/[0.06] px-3 py-2 transition hover:border-med/40"
-                  >
-                    {mine.unloggedDays.slice(0, 8).map((day) => (
-                      <span
-                        key={day}
-                        className="rounded bg-canvas/60 px-1.5 py-0.5 font-mono text-[0.625rem] text-fg-muted"
-                      >
-                        {formatDate(day, { day: 'numeric', month: 'short' })}
-                      </span>
-                    ))}
-                    {mine.unloggedDays.length > 8 ? (
-                      <span className="text-[0.625rem] text-fg-subtle">
-                        +{mine.unloggedDays.length - 8} more
-                      </span>
-                    ) : null}
-                  </Link>
-                </div>
+              {/*
+                Only when there is something behind it. A button that opens a dialog showing the
+                same five rows is a button that teaches people not to press it.
+              */}
+              {weekHidden ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="self-start"
+                  onClick={() => setShowing('week')}
+                >
+                  Show {weekHidden} more
+                </Button>
               ) : null}
             </CardBody>
           )}
@@ -297,51 +402,57 @@ export default function DashboardPage() {
             </CardBody>
           ) : (
             <CardBody className="flex flex-col gap-1.5">
-              {data.attention.map((row) => (
-                <div
-                  key={row.audit._id}
-                  className="rounded-lg border border-line-soft bg-canvas/40 px-3 py-2.5"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      to={`/engagements/${row.audit._id}`}
-                      className="min-w-0 flex-1 truncate text-xs text-fg transition hover:text-brand-300"
-                    >
-                      {row.audit.name}
-                    </Link>
-                    {row.company ? (
-                      <span className="truncate text-[0.625rem] text-fg-subtle">{row.company}</span>
-                    ) : null}
-                    <StateBadge state={row.audit.state} />
-                  </div>
-                  <ul className="mt-1.5 flex flex-col gap-1">
-                    {row.reasons.map((reason) => {
-                      const meta = LEVEL_META[reason.level] ?? LEVEL_META.note;
-                      return (
-                        <li key={reason.code}>
-                          <Link
-                            to={`/engagements/${row.audit._id}?tab=${reason.tab}`}
-                            className="flex items-center gap-2 text-[0.6875rem] leading-relaxed text-fg-muted transition hover:text-fg"
-                          >
-                            <span className={cn('size-1.5 shrink-0 rounded-full', meta.dot)} />
-                            <span className="min-w-0 flex-1 truncate">
-                              {reason.label}
-                              {/* The server keeps days out of its sentences; this is the side
-                                  that knows how to write one. */}
-                              {reason.day ? ` — ${formatDate(reason.day)}` : ''}
-                            </span>
-                            <ArrowRight size={11} className="shrink-0 text-fg-subtle" />
-                          </Link>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
+              {attention.slice(0, SHOWN).map((row) => (
+                <AttentionRow key={row.audit._id} row={row} />
               ))}
+
+              {attention.length > SHOWN ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="self-start"
+                  onClick={() => setShowing('attention')}
+                >
+                  Show {attention.length - SHOWN} more
+                </Button>
+              ) : null}
             </CardBody>
           )}
         </Card>
       </div>
+
+      {/*
+        The whole of either queue.
+
+        Both draw the same components the cards do, with the cut taken off — a dialog with its own
+        copy of the markup is a second thing to keep in step, and the one that falls behind is the
+        one nobody is looking at.
+      */}
+      <Modal
+        open={showing === 'week'}
+        onClose={() => setShowing(null)}
+        title="Your week"
+        description="Everything booked, assigned or unfinished, in full."
+        size="lg"
+      >
+        <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto">
+          <WeekSections mine={mine} />
+        </div>
+      </Modal>
+
+      <Modal
+        open={showing === 'attention'}
+        onClose={() => setShowing(null)}
+        title="Needs a look"
+        description="Every engagement with something outstanding, worst first."
+        size="lg"
+      >
+        <div className="flex max-h-[70vh] flex-col gap-1.5 overflow-y-auto">
+          {attention.map((row) => (
+            <AttentionRow key={row.audit._id} row={row} />
+          ))}
+        </div>
+      </Modal>
 
       {/*
         Change over time, so a heatmap — one hue, light to dark, and the only chart on the page

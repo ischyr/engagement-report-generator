@@ -227,7 +227,7 @@ try {
      * rather than after.
      */
     const seen = [];
-    await generateReport({
+    const rendered = await generateReport({
       audit: await Audit.findById(audit._id).populate('company'),
       template: await Template.findById(template._id),
       settings: await Settings.getSettings(),
@@ -251,6 +251,40 @@ try {
       '  and stopping short of 100, which is the queue’s to give',
       seen[seen.length - 1].progress < 100,
       String(seen[seen.length - 1].progress)
+    );
+
+    /*
+     * And the same stages, timed.
+     *
+     * The total has always been recorded and has never been actionable: "this report took ninety
+     * seconds" is a fact nobody can do anything with until it says which ninety. The timings hang
+     * off the same `onProgress` boundaries the bar uses, so a stage the operator waited through and
+     * a stage in the record are labelled the same thing — which is the whole reason they are not a
+     * second list.
+     */
+    const timed = rendered.provenance?.stages ?? {};
+    check(
+      '  every stage it announced was also timed',
+      seen.every((step) => Object.prototype.hasOwnProperty.call(timed, step.stage)),
+      `${JSON.stringify(Object.keys(timed))} vs ${JSON.stringify(seen.map((s) => s.stage))}`
+    );
+    check(
+      '  including the last one, which nothing announces the end of',
+      Object.keys(timed).length === seen.length,
+      JSON.stringify(timed)
+    );
+    check(
+      '  each is a real number of milliseconds',
+      Object.values(timed).every((ms) => Number.isFinite(ms) && ms >= 0),
+      JSON.stringify(timed)
+    );
+    /* They are the parts of the whole, so they cannot add up to more than it. A stage left open —
+     * the bug this shape exists to avoid — shows up here as a total that overshoots. */
+    const summed = Object.values(timed).reduce((a, b) => a + b, 0);
+    check(
+      '  and together they account for the total without exceeding it',
+      summed <= rendered.provenance.ms && summed >= rendered.provenance.ms - 50,
+      `${summed} of ${rendered.provenance.ms}`
     );
     check(
       '  in words a person waiting would use, not function names',

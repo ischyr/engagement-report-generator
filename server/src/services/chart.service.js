@@ -235,6 +235,58 @@ export function legendHtml(slices) {
  * @param {{kind?: 'donut'|'bar', size?: number, width?: number, alt?: string}} [options]
  * @returns {string} empty when every slice is zero — a template guards with {{#stats.total}}
  */
+/**
+ * A ranked chart: one row per thing, longest bar first.
+ *
+ * The shape the severity ring cannot be. "Which hosts carry the most findings" and "which
+ * weakness classes keep recurring" are the two questions a reader asks after the severity
+ * breakdown, and both have a long tail — ten categories in a donut is ten wedges nobody can tell
+ * apart, and a legend under it that takes three lines.
+ *
+ * **A table, not a picture.** Every label and every number is real text in the template's own
+ * typeface, selectable and searchable, and only the bars themselves are pixels — drawn by
+ * `segmentedBarPng` at a proportional width, one solid pill each. A drawing with the labels
+ * rendered into it would be an image of a table, which is the thing a report should never contain.
+ *
+ * @param {{label:string,count:number,color?:string}[]} rows
+ * @param {{max?:number, width?:number, colour?:string, limit?:number}} [options]
+ * @returns {string} empty when there is nothing to rank
+ */
+export function rankedTableHtml(rows, { width = 260, colour = '4F6BED', limit = 12 } = {}) {
+  const ranked = (rows ?? [])
+    .filter((row) => row && String(row.label ?? '').trim() && Number(row.count) > 0)
+    .sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)))
+    .slice(0, limit);
+  if (!ranked.length) return '';
+
+  const top = ranked[0].count;
+  const cells = ranked.map((row) => {
+    /*
+     * Proportional width, with a floor.
+     *
+     * A row with one finding against a row with forty would otherwise draw a bar a few pixels wide
+     * that reads as a rendering fault rather than as a small number. Twelve pixels is the smallest
+     * thing that still looks deliberate.
+     */
+    const span = Math.max(12, Math.round((row.count / top) * width));
+    const bar = segmentedBarPng([{ label: row.label, count: 1, color: row.color ?? colour }], {
+      width: span,
+      height: 10,
+    });
+    const image = bar
+      ? `<img src="data:image/png;base64,${bar.buffer.toString('base64')}" ` +
+        `width="${bar.width}" height="${bar.height}" alt="" data-figure="no">`
+      : '';
+    return (
+      `<tr><td>${escapeXml(String(row.label))}</td>` +
+      `<td>${image}</td>` +
+      `<td>${Number(row.count)}</td></tr>`
+    );
+  });
+
+  return `<table>${cells.join('')}</table>`;
+}
+
 export function chartBlockHtml(slices, { kind = 'donut', size, width, alt } = {}) {
   const drawn =
     kind === 'bar'

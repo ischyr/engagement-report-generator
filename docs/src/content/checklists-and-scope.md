@@ -92,6 +92,31 @@ titles. Anything it cannot use is named and counted rather than refusing the who
 > [!TIP]
 > `npm run test:checklist-io` covers the round trip and the rules above.
 
+## One check, several hosts
+
+A checklist is one tick per item, which on a twelve-host internal test is a coverage claim nobody
+can stand behind: *"tested for authentication bypass"* ticked once, and the report says **we did
+that** where the honest sentence is **we did that on these nine**.
+
+Hover a check and choose **track per host**. It expands into one row per address in the scope, each
+ticked on its own and each able to carry its own short note — *"no bypass"*, *"login page not
+reachable"*.
+
+The check itself then ticks **when every host is ticked**, and unticks the moment any of them is
+untimed. That rule is deliberate and it is what keeps everything else working: the report's counts,
+the preflight warning and the progress bar all read the check's own `done`, and none of them has
+to know hosts exist. A check tracked per host cannot be ticked directly — you tick the hosts.
+
+Only addresses already in the scope can be used. A coverage record that could claim a host nobody
+agreed to test would be wrong in the one direction it must never be wrong in.
+
+Turn it off with **stop tracking this per host** and the check goes back to a single tick. Most
+should stay that way — this is for the handful where the difference between nine and twelve is the
+difference between an accurate report and an optimistic one.
+
+In a template: `{{#hasHosts}}`, `{{ coverage }}` (*"2 of 3 hosts"*), and `{{#hosts}}` for the
+rows themselves.
+
 ## Notes
 
 Working notes: what you tried, what did not work, the command that finally did. They never appear

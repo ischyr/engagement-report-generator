@@ -103,4 +103,23 @@ export function fitToPage(widthPx, heightPx, maxWidthEmu = MAX_IMAGE_WIDTH_EMU) 
   return { cx: limit, cy: Math.max(1, Math.round(h * ratio)) };
 }
 
+/**
+ * A picture at exactly this width, with the height the aspect ratio asks for.
+ *
+ * The other half of `fitToPage`, which only ever shrinks. A 320-pixel error dialog is inside the
+ * column and so is left alone, which is right until somebody wants it printed at the width of the
+ * text rather than as a stamp in the corner of the page — and a 3000-pixel terminal capture that
+ * has been asked for at half width has to come down further than the column would take it.
+ *
+ * Enlarging is the author's decision and stays the author's decision: nothing calls this unless a
+ * width was asked for. Upscaling a screenshot costs resolution, and doing it by default would
+ * quietly soften every small picture in every report.
+ */
+export function scaleToWidth(widthPx, heightPx, widthEmu) {
+  const target = Math.max(1, Math.round(Number(widthEmu) || 0));
+  const w = Math.max(1, Math.round(widthPx * EMU_PER_PIXEL));
+  const h = Math.max(1, Math.round(heightPx * EMU_PER_PIXEL));
+  return { cx: target, cy: Math.max(1, Math.round((h * target) / w)) };
+}
+
 export default readImageSize;

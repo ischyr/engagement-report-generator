@@ -47,6 +47,7 @@ import NotificationsBar from './NotificationsBar.jsx';
 import { Button } from '../ui/Button.jsx';
 /* For the Suspense boundary around the Outlet: pages arrive on demand. See App.jsx. */
 import { LoadingBlock } from '../ui/Feedback.jsx';
+import ErrorBoundary from './ErrorBoundary.jsx';
 import ShortcutsDialog from './ShortcutsDialog.jsx';
 
 /** Kept in step with ROLE_LABELS on the server and the Users page. */
@@ -556,9 +557,21 @@ export function AppShell() {
               moment on every navigation. Pages are loaded on demand — see App.jsx — and this is the
               only place in the signed-in app that shows it happening.
             */}
-            <Suspense fallback={<LoadingBlock className="py-16" />}>
-              <Outlet />
-            </Suspense>
+            {/*
+              And where a page that throws is caught.
+              Inside the shell rather than around it: the navigation, the notifications and the
+              presence heartbeat are not what failed, and catching at the root would take them down
+              with the page and leave somebody with no way out but the address bar.
+
+              Keyed on the path, so navigating away from a broken page clears the error instead of
+              showing the same wreck on the next one — a boundary with no key stays tripped, and
+              the app looks permanently broken after one bad render.
+            */}
+            <ErrorBoundary key={location.pathname}>
+              <Suspense fallback={<LoadingBlock className="py-16" />}>
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         </main>
 

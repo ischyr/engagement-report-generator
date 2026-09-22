@@ -61,6 +61,21 @@ engagement has been delivered, because the client has written their remediation 
 those numbers, and while anything restorable is in the trash, because a restore brings a finding
 back carrying its own.
 
+Preflight says so when the numbers do not read as a clean run, and quotes what the report will
+print — a note rather than a warning, because an untidy sequence is untidy and not wrong, and on a
+re-issue it is not even fixable.
+
+### The order they print in
+
+Highest severity first, ties broken by title, unless you have turned automatic ordering off — then
+it is the order you dragged them into.
+
+**Severity, not score.** A finding argued down from Critical to Low prints among the Lows, not at
+the 9.8 its vector still computes; an override moves it to the middle of the band it was moved
+into, so it sits among its new peers and the vector's own score still breaks ties inside the band.
+The findings tab, the renumber and the report all read the same key, which is what makes
+*"puts them back in the order shown"* a true sentence.
+
 ## Whose it is
 
 A finding records who wrote it and who touched it last. Neither answers *whose is it now*, which is
@@ -115,6 +130,124 @@ was already labelled with.
 >
 > If you want a weakness class that *does* print — a CWE, an OWASP category — that wants a field of
 > its own rather than a convention on this one.
+
+## When the client decides to live with it
+
+Remediation status has a fourth value: **Risk accepted**.
+
+It is not a kind of fixed. The vulnerability is still there — what changed is that somebody with
+the authority to do so decided not to change it. Before this there were two options and both were
+wrong: leave it open, and it sits on every retest report for a year as an outstanding Critical
+nobody is working on; or mark it fixed, which is a false statement in a document with your name
+on it.
+
+Choosing it asks for two things, and the save is refused without them:
+
+- **Why.** The client's reasoning, in their words where you have them.
+- **Who accepted it.** The person at the client who decided — a name and a role. Free text, not
+  one of your own people: whoever accepts a risk is at the client and has no account here, and
+  recording a consultant's name on that field would be the one detail that makes the sentence
+  untrue.
+
+You can also record **when to look at it again**. Optional, because some acceptances genuinely are
+permanent — but an acceptance with no end is how a Critical quietly becomes forever, and a date
+there is what lets a later engagement ask about it.
+
+### What it changes elsewhere
+
+An accepted risk is closed as a piece of work and unresolved as a vulnerability, and everything
+that counts findings now keeps those apart:
+
+- It is **not** counted in the headline "still open" number an executive summary carries.
+- It is **not** work outstanding on the retest tab — it gets its own section there, listed rather
+  than hidden, with the reason on each row.
+- It **is** still a live finding, in the severity breakdown and in the report.
+- On the client's own link it shows as accepted. Unticking it there leaves it accepted rather than
+  reopening it: a decision somebody signed for should not be undone by a tick on a web page. They
+  can still tick it — accepted and then fixed anyway is a good outcome.
+
+Accepting is done one finding at a time. The bulk action refuses it, because each one needs its own
+reason and its own name, and a bulk action that set them all to the same reason would be inventing
+the reason.
+
+For templates: `{{#isAccepted}}`, `{{#acceptedFindings}}`, `{{ riskAccepted.reason }}`,
+`{{ riskAccepted.by }}`, and `{{ stats.accepted }}`. `{{#needsWork}}` is the flag for
+"somebody still has to do something about this", which is open or retesting and neither of the
+other two.
+
+## Blocks a report needs
+
+Four things live in the slash menu (`/`) that a general-purpose editor does not offer, because a
+penetration test report needs them and nothing else does.
+
+**Callout box.** The paragraph a reader must not skim past — *"the fix below breaks single
+sign-on"*. Four kinds: Note, Recommended, Warning, Danger. Each prints as a shaded box with a
+coloured bar down its left edge, which is what makes them findable when somebody is flicking
+through looking for the warnings. A callout can hold a list or a code pane, not just a sentence.
+
+### Table columns
+
+Drag a column border in the editor and the report follows. What survives the trip is the *ratio*
+between the columns rather than the pixels — the editor is as wide as your browser window, which is
+a number that means nothing about an A4 page — so a first column you made four times the width of
+the others prints four times the width of the others.
+
+Columns you never touched share what is left, and none is allowed to collapse to a hairline. A
+table nobody resized is an equal split, exactly as before.
+
+### Asking about one finding
+
+Reviews here are a quorum: somebody reads the whole report and approves it. That is the right
+shape for signing a report off and the wrong shape for the review interaction that happens twenty
+times a week — *is this really a High?*, *have I got the remediation right for their stack?*
+
+**Ask for a second opinion** puts that question on the finding. Ask it of somebody by name, or
+leave it open and everybody on the engagement is told and any of them can take it. It sits in the
+answerer's inbox under **Asked of you** until it is settled, and the answer is posted as an
+ordinary comment — so the reasoning is on the record with the rest of the review, quotable the
+next time a client asks why the score is what it is.
+
+Three ways it ends: an answer, *"looks fine to me"* from somebody who read it and had nothing to
+add, or the asker withdrawing it. The log says which, because *"nobody ever answered"* and
+*"somebody did"* are different facts about a report.
+
+It works on an approved engagement too, unlike most things. A question asked during sign-off is
+exactly the one still worth answering.
+
+### Pointing at a line of a pane
+
+A proof of concept is forty lines of request and one line that matters. Put the cursor in the pane
+and press **Highlight a line**: the pane's lines are listed, and clicking one marks it. Marked
+lines are drawn in the accent colour in the report, so a reader's eye lands on them without being
+told where to look.
+
+The lines rather than a box to type numbers into, because the numbers are the thing you are least
+able to be sure of — a pane you have edited twice has moved them. It is the same gesture as
+[marking a line of tool output](/enumeration), which is where this started: the write-up was the
+one pane that could not say which line was the point.
+
+**Refer to another finding.** Picks a finding and drops a chip. In the document it prints as that
+finding's identifier — *"as described in VULN-04"* — worked out when the report is generated, so it
+survives renumbering. Type by hand instead and it is wrong the first time anything moves.
+
+The chip shows the *title* while you are writing, because "VULN-04" tells you nothing at the moment
+you are choosing which finding to point at. The finding you are editing is never offered.
+
+If the finding it points at is later deleted, **preflight says so** before you generate — which
+finding, which words. Generate anyway and the sentence prints *"(finding removed)"*: visible on
+purpose, because quietly dropping the words leaves a sentence that reads as though nothing is
+missing.
+
+**Footnote.** A superscript mark in the sentence, the words at the foot of the page. For the tool
+version, the caveat on a measurement, the reason something was not pursued — the sentence that
+interrupts the paragraph if you leave it inline and is too small to be a paragraph of its own. Word
+numbers them and keeps renumbering them afterwards.
+
+A template with no footnote part in it gets a parenthetical instead, so the words always reach the
+reader. Every document Word makes from its own default template has one.
+
+**Page break.** What follows starts on a fresh page. A template can break between findings; this is
+how you break *inside* one — usually to keep a long proof of concept off the bottom of a page.
 
 ## Pasting evidence into a write-up
 

@@ -77,6 +77,25 @@ tokens one at a time — "which credentials does this person hold" is not an aut
 accounts confers — so the way to stop somebody's automation is to disable the account, which stops
 all of it at once.
 
+## Deleting several accounts
+
+Tick the accounts on the users page and a bar appears at the bottom with **Delete**. Fifty at a
+time, and never your own — the tick is simply not offered on your row, because a box you cannot act
+on is worse than no box.
+
+Before it asks, it says what each account still holds: engagements they are on, findings and checks
+assigned to them, API tokens, scratchpad notes, bookings and days of logged hours.
+
+> [!warning]
+> **Deleting an account hands nothing on.** Findings assigned to these people stay assigned to an
+> account that is gone, approvals they gave still count towards a quorum, and their bookings and
+> hours become rows with no name. Reassign anything that matters before you delete, because
+> afterwards there is nothing left to reassign *from*.
+
+A batch is refused whole rather than part-done. Four of six deleted and then a refusal would leave
+somebody re-reading a list to work out which four, and the rules being applied are about the
+selection rather than about any one account in it.
+
 ## Skills and the team page
 
 Each person can record what they are good at, which is what the staffing view reads when it

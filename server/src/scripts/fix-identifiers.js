@@ -21,21 +21,12 @@
 
 import { connectDatabase, disconnectDatabase } from '../config/db.js';
 import { Audit } from '../models/audit.model.js';
-import { calculateCvss } from '../services/cvss.js';
+import { orderFindings } from '../services/cvss.js';
 import { log } from '../utils/logger.js';
 
-/** The order the report would show them in, so assigned numbers look natural. */
-function displayOrder(audit) {
-  const findings = [...(audit.findings ?? [])];
-  if (audit.sortFindings === false) {
-    return findings.sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
-  }
-  return findings.sort((a, b) => {
-    const scoreA = calculateCvss(a.cvssv3).baseScore ?? -1;
-    const scoreB = calculateCvss(b.cvssv3).baseScore ?? -1;
-    return scoreB - scoreA || String(a.title).localeCompare(String(b.title));
-  });
-}
+/** The order the report shows them in, so assigned numbers look natural. */
+const displayOrder = (audit) =>
+  orderFindings(audit.findings, { manual: audit.sortFindings === false });
 
 async function main() {
   const dryRun = process.argv.includes('--dry') || process.argv.includes('--dry-run');

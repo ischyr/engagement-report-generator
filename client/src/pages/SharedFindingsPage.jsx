@@ -188,8 +188,27 @@ export default function SharedFindingsPage() {
                       {finding.status === 'fixed' ? 'Marked fixed' : 'Mark as fixed'}
                     </Button>
                   ) : (
-                    <Badge tone={finding.status === 'fixed' ? 'success' : 'warning'}>
-                      {finding.status === 'fixed' ? 'Fixed' : 'Open'}
+                    /*
+                      Three states on the client's own page, not two.
+
+                      A risk they accepted showing as "Open" reads as though we are still asking
+                      them about it — which is the opposite of what an acceptance means, and they
+                      are the ones who made the decision.
+                    */
+                    <Badge
+                      tone={
+                        finding.status === 'fixed'
+                          ? 'success'
+                          : finding.status === 'accepted'
+                            ? 'neutral'
+                            : 'warning'
+                      }
+                    >
+                      {finding.status === 'fixed'
+                        ? 'Fixed'
+                        : finding.status === 'accepted'
+                          ? 'Risk accepted'
+                          : 'Open'}
                     </Badge>
                   )
                 }

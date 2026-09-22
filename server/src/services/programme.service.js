@@ -53,7 +53,7 @@ function summarise(audit) {
     const severity = calculateCvss(finding.cvssv3).baseSeverity;
     counts[severity] = (counts[severity] ?? 0) + 1;
     weight += SEVERITY_WEIGHT[severity] ?? 0;
-    const status = ['open', 'retesting', 'fixed'].includes(finding.remediationStatus)
+    const status = ['open', 'retesting', 'fixed', 'accepted'].includes(finding.remediationStatus)
       ? finding.remediationStatus
       : 'open';
     remediation[status] += 1;

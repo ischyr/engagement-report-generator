@@ -10,13 +10,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { Leave, LEAVE_TYPES, LEAVE_PORTIONS } from '../models/leave.model.js';
-import { Notification } from '../models/notification.model.js';
 import { Settings } from '../models/settings.model.js';
 import { User } from '../models/user.model.js';
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, forbidden, notFound } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
 import { allowanceUsage, daysIn, isWeekend, weekdaysBetween, leaveDayMap, availableDaysFor } from '../services/leave.service.js';
+import { notify } from '../services/notify.service.js';
 
 const router = Router();
 
@@ -87,7 +87,7 @@ async function noticeRequest(leave, actor) {
     approvedAt: { $ne: null },
   }).select('_id');
   const who = nameOf(actor);
-  await Notification.create(
+  await notify(
     admins
       .filter((admin) => String(admin._id) !== String(actor._id))
       .map((admin) => ({
@@ -110,7 +110,7 @@ async function noticeRequest(leave, actor) {
 async function noticeDecision(leave, actor) {
   const owner = idOf(leave.user);
   if (!owner || owner === String(actor._id)) return;
-  await Notification.create({
+  await notify({
     user: owner,
     type: 'leave-decided',
     actor: actor._id,
@@ -294,7 +294,7 @@ router.delete(
       await Leave.deleteOne({ _id: leave._id });
       // An admin cancelling somebody's approved leave is news to them.
       if (isAdmin && leave.status === 'approved' && idOf(leave.user) !== String(req.user._id)) {
-        await Notification.create({
+        await notify({
           user: idOf(leave.user),
           type: 'leave-decided',
           actor: req.user._id,

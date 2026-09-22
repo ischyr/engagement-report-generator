@@ -101,6 +101,46 @@ too. A partial that includes itself is reported rather than followed; a name tha
 nothing is left visible in the output, because a silently missing letterhead is how a report goes
 out wrong and nobody notices.
 
+## Appendices
+
+A section can be marked **Appendix** — the toggle sits beside its ordering controls on the Sections
+tab. It changes nothing about the section; it says where the section goes.
+
+Templates get the split as two loops:
+
+```text
+{{#bodySections}} … {{/bodySections}}
+{{#appendices}} … {{/appendices}}
+```
+
+So the narrative can come before the findings and the reference material after them, which is the
+arrangement every report of any length wants: the full tool output, the credential register and the
+scope dump are things a reader looks something up in, and leaving them in the body pushes the
+findings further from the front the longer they get.
+
+`{{ sectionList }}` is unchanged and still holds every section in order, so a template that prints
+it carries on exactly as before. `{{#hasAppendices}}` guards a heading that should only appear if
+there is something under it.
+
+## What a template leaves out, it leaves out
+
+A template prints the tags it names and nothing else — and that now goes for the *contents* of the
+fields as well, not only the words.
+
+Until recently every rich field of every finding was converted on the way into the render whether
+the template asked for it or not, and converting a field writes any picture in it straight into the
+.docx. So a document that never printed `{{@rich.poc}}` still carried every proof-of-concept
+screenshot inside it: invisible in Word, present in the file, and travelling to whoever the document
+was addressed to. The shipped NDA, permission to attack and proposal print no rich field at all, so
+each of them was carrying the engagement's evidence.
+
+Fields are converted when a tag asks for them now. Nothing about writing a template changes; what
+changes is that a template which omits a field produces a document that does not contain it. On
+the shipped NDA that is the difference between 1.6 MB and 11 KB.
+
+If you maintain a summary template alongside a full one, this is worth knowing about any document
+you generated before it.
+
 ## Keeping several templates alike
 
 A firm has one letterhead and five documents that share it. Rather than five copies that drift,

@@ -82,8 +82,20 @@ export const ENUMERATION_STATUS_LABELS = {
   abandoned: 'Not pursued',
 };
 
-/** Where a finding stands in the remediation cycle, for retest reports. */
-export const REMEDIATION_STATUSES = ['open', 'retesting', 'fixed'];
+/**
+ * Where a finding stands in the remediation cycle, for retest reports.
+ *
+ * `accepted` is the third real outcome and the one that used to have nowhere to go. A client who
+ * says "we accept this, it is behind the VPN and the fix costs more than the asset" left two
+ * options, both wrong: leave it open, and it sits on every retest report for a year as an
+ * outstanding Critical nobody is working on — or mark it fixed, which is a false statement in a
+ * document with our name on it.
+ *
+ * It is deliberately **not** a kind of fixed. The vulnerability is still there; what changed is
+ * that somebody with the authority to do so decided to live with it. A report has to be able to
+ * say that, and a retest has to be able to stop asking.
+ */
+export const REMEDIATION_STATUSES = ['open', 'retesting', 'fixed', 'accepted'];
 
 /**
  * A comment on a finding. Internal to the team — comments are never part of the
@@ -347,10 +359,57 @@ const testCheckSchema = new mongoose.Schema(
     /** Optional note left when ticking, e.g. "no injectable parameters found". */
     result: { type: String, default: '', maxlength: 2000 },
 
+    /**
+     * The same check, tracked per host.
+     *
+     * A checklist is one tick per item for the whole engagement, and on a twelve-host internal
+     * test that is a coverage claim nobody can stand behind: "tested for authentication bypass"
+     * ticked once, and the report says *we did that* where the honest sentence is *we did that on
+     * these nine*. The scope already knows which hosts were reached — `status` on each — and the
+     * checklist never met it.
+     *
+     * **Empty is the ordinary case and means exactly what it always did.** A check with no entries
+     * here is an engagement-wide check; nothing about it changes, and no existing reader has to
+     * learn anything. Adding hosts is opt-in, per check, for the ones where it is worth the rows.
+     *
+     * `key` is the host's address, from `hostKey` — hosts are `_id: false` subdocuments, so the
+     * address is the only identity they have. A host later renamed therefore looks like a
+     * different host, which is the same conclusion the scope importer reaches on a rescan.
+     */
+    hosts: [
+      {
+        _id: false,
+        key: { type: String, required: true, trim: true, lowercase: true, maxlength: 200 },
+        done: { type: Boolean, default: false },
+        doneBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        doneAt: { type: Date, default: null },
+        /** What was found on this host specifically. Shorter than the check's own note. */
+        result: { type: String, default: '', maxlength: 500 },
+      },
+    ],
+
     order: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
+
+/**
+ * Whether a check counts as done, which is the one question every reader of a checklist asks.
+ *
+ * With hosts, done means **every listed host is done** — a check covering nine hosts with eight
+ * ticked is not a check anybody should print as carried out. Without hosts it is the flag itself,
+ * unchanged.
+ *
+ * Exported and used wherever `done` is written rather than computed on read, because `done` is
+ * what the report prints, what the counts count, what preflight warns about and what the dashboard
+ * sorts by. Deriving it in each of those would be five chances for them to disagree about the same
+ * checklist.
+ */
+export function checkIsDone(check) {
+  const hosts = check?.hosts ?? [];
+  if (!hosts.length) return Boolean(check?.done);
+  return hosts.every((host) => host.done);
+}
 
 /** A single finding as it exists inside one engagement. */
 const findingSchema = new mongoose.Schema(
@@ -384,6 +443,36 @@ const findingSchema = new mongoose.Schema(
      * engagement being approved, or somebody handing it on.
      */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    /**
+     * "Can somebody look at this one before it goes out."
+     *
+     * Reviews in this app are an engagement-level quorum: somebody reads the whole thing and
+     * approves it. That is the right shape for signing a report off and the wrong shape for the
+     * commonest review interaction in this trade, which is one question about one finding —
+     * *is this really a High?*, *have I got the remediation right for their stack?* Asking it had
+     * no home, so it happened in chat, where the answer is lost by the time anybody wants to know
+     * why the score is what it is.
+     *
+     * A state rather than a comment, because a question that is merely *said* is a question
+     * nobody is holding. Outstanding while `askedAt` is set and `answeredAt` is not, which is
+     * what puts it in somebody's inbox and keeps it there.
+     *
+     * `of` is optional on purpose: half the time you want a particular person's eye, and half the
+     * time you want whoever is free. Left empty it is addressed to everybody on the engagement.
+     *
+     * The answer itself is a comment on the finding, not a field here. A second opinion is worth
+     * having because of its reasoning, and reasoning belongs in the thread the rest of the review
+     * chatter is in.
+     */
+    secondOpinion: {
+      askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      of: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      askedAt: { type: Date, default: null },
+      question: { type: String, default: '', trim: true, maxlength: 500 },
+      answeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      answeredAt: { type: Date, default: null },
+    },
 
     remediationStatus: { type: String, enum: REMEDIATION_STATUSES, default: 'open' },
 
@@ -477,6 +566,37 @@ const findingSchema = new mongoose.Schema(
     ],
 
     /**
+     * Why the client is living with this one, and who said so.
+     *
+     * Required in practice for `remediationStatus: 'accepted'` — see `audits.routes.js`, which
+     * refuses the status without it. Not enforced in the schema, because a document written before
+     * this existed must stay saveable; the rule belongs on the way in, not on every save of every
+     * engagement that predates it.
+     *
+     * `acceptedBy` is **free text and deliberately not a user**. The person accepting a risk is
+     * somebody at the client — a CISO, a system owner, whoever signs — and none of them has an
+     * account here. Recording our own consultant as the acceptor would be the one detail that
+     * makes the sentence untrue.
+     */
+    riskAcceptance: {
+      /** The client's reasoning, in their words where possible. */
+      reason: { type: String, default: '', maxlength: 2000 },
+      /** Who at the client accepted it. A name and a role, not an account. */
+      acceptedBy: { type: String, default: '', trim: true, maxlength: 200 },
+      /** When they said so. */
+      acceptedAt: { type: Date, default: null },
+      /**
+       * When the decision should be looked at again, if they set one.
+       *
+       * An acceptance with no end is how a Critical quietly becomes permanent. Optional, because
+       * some genuinely are permanent — but a date here is what lets a later engagement ask.
+       */
+      reviewOn: { type: String, default: '' },
+      /** Which of our people recorded it, which is a different question from who accepted it. */
+      recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
+
+    /**
      * A severity the team is standing behind, when it differs from the vector's.
      *
      * Not a replacement for scoring: the vector is still recorded, still printed, and still what
@@ -557,6 +677,19 @@ const sectionSchema = new mongoose.Schema(
     field: { type: String, required: true },
     name: { type: String, required: true },
     text: { type: String, default: '' },
+    /**
+     * Whether this section belongs at the back rather than in the body.
+     *
+     * The full tool output, the credential register, the scope dump, the methodology — material a
+     * reader consults rather than reads, and which pushes the findings further from the front the
+     * longer it gets. "Appendix" has been a section somebody named "Appendix" and nothing more, so
+     * a template had no way to put the body first and the reference material after it without
+     * hard-coding the names its author happened to use.
+     *
+     * A flag rather than an ordering, because the order within each group is still the order the
+     * sections are in. This says which group.
+     */
+    appendix: { type: Boolean, default: false },
     customFields: [
       {
         _id: false,
@@ -1110,6 +1243,52 @@ const auditSchema = new mongoose.Schema(
      * editable after, because a scope change changes what was sold.
      */
     daysSold: { type: Number, default: null, min: 0, max: 400 },
+
+    /**
+     * The closeout call, and what came out of it.
+     *
+     * The other end of the job, and the only part of it that was never recorded anywhere. A
+     * kickoff is a structured record on the proposal — when, who was there, what was agreed. The
+     * engagement then captures the testing in enormous detail, produces a document, and stops.
+     * The call where you walk the client through what you found, hear what they push back on, and
+     * agree who fixes what by when has been living in somebody's notebook.
+     *
+     * That matters more now than it used to, because two of the three things decided on that call
+     * have somewhere to go: a finding's remediation date and a risk the client accepts. This is
+     * the third — the conversation itself, and the commitments made in it that are not about one
+     * finding.
+     *
+     * Deliberately modelled on `kickoff` rather than invented: the same shape answers the same
+     * questions at the other end, and a reader who knows one knows the other.
+     */
+    closeout: {
+      heldOn: { type: String, default: '' },
+      /** Who was there, in words: a closeout has people on it who have no account here. */
+      attendeesOurs: { type: String, default: '' },
+      attendeesTheirs: { type: String, default: '' },
+      /** What was walked through, and what was said back. */
+      notes: { type: String, default: '', maxlength: 20000 },
+      /**
+       * What they disagreed with.
+       *
+       * Its own field because it is the one thing from that call nobody writes down and everybody
+       * needs later — "they dispute the severity on the SSRF" is the sentence a retest starts
+       * from, and a year later it is the only record that the disagreement happened at all.
+       */
+      disputed: { type: String, default: '', maxlength: 4000 },
+      /**
+       * What they committed to, beyond the per-finding dates.
+       *
+       * "A rebuild of the auth service in Q3", "they will not be fixing anything on the legacy
+       * platform" — commitments about the estate rather than about one finding, which have
+       * nowhere else to live.
+       */
+      commitments: { type: String, default: '', maxlength: 4000 },
+      /** When a retest was agreed for, if one was. A day, in the format everything else uses. */
+      retestOn: { type: String, default: '' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      at: { type: Date, default: null },
+    },
 
     /**
      * When somebody's access to this engagement ends.

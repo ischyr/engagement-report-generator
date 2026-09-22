@@ -41,10 +41,14 @@ export const ACTIONS = {
   APPROVED: 'audit.approved',
   APPROVAL_WITHDRAWN: 'audit.approval-withdrawn',
   APPROVALS_CLEARED: 'audit.approvals-cleared',
+  /* The call at the end of the job, which nothing recorded before. */
+  CLOSEOUT_RECORDED: 'audit.closeout',
   REPORT_GENERATED: 'report.generated',
   FINDING_TRANSFERRED: 'finding.transferred',
   FINDING_PROMOTED: 'finding.promoted',
   MEDIA_REPLACED: 'media.replaced',
+  /* A capture that arrived from a script rather than from somebody's browser. */
+  MEDIA_UPLOADED: 'media.uploaded',
   REPORT_DELIVERED: 'report.delivered',
   REPORT_DELIVERY_REMOVED: 'report.delivery-removed',
 
@@ -93,6 +97,10 @@ export const ACTIONS = {
   CHECKS_CLEARED: 'check.cleared',
   CHECK_BLOCKED: 'check.blocked',
   CHECK_UNBLOCKED: 'check.unblocked',
+
+  OPINION_ASKED: 'opinion.asked',
+  OPINION_GIVEN: 'opinion.given',
+  OPINION_WITHDRAWN: 'opinion.withdrawn',
 
   COMMENT_ADDED: 'comment.added',
   COMMENT_RESOLVED: 'comment.resolved',

@@ -7,7 +7,6 @@ import env from '../config/env.js';
 import { User, SIGN_IN_BLOCK_MESSAGES } from '../models/user.model.js';
 import { Settings } from '../models/settings.model.js';
 import { Session, newSessionId } from '../models/session.model.js';
-import { Notification } from '../models/notification.model.js';
 import { describeDevice } from '../utils/device-key.js';
 import { consumeAccountToken, readAccountToken } from '../services/account-tokens.service.js';
 import apiTokensRoutes from './api-tokens.routes.js';
@@ -15,6 +14,7 @@ import { notifyAdminsOfPendingAccount } from '../services/account-approval.servi
 import asyncHandler from '../utils/async-handler.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../utils/http-error.js';
 import { validate } from '../middleware/validate.js';
+import { notify } from '../services/notify.service.js';
 import {
   clearing,
   requireAuth,
@@ -109,7 +109,7 @@ async function noticeNewDevice({ user, req, device }) {
   const anyBefore = await Session.countDocuments({ user: user._id });
   if (anyBefore === 0) return false;
 
-  await Notification.create({
+  await notify({
     user: user._id,
     type: 'new-sign-in',
     actor: user._id,

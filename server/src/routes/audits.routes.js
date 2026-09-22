@@ -16,7 +16,9 @@ import {
   enumerationSubtree,
   REMEDIATION_STATUSES,
   RECIPIENT_ROLES,
+  checkIsDone,
 } from '../models/audit.model.js';
+import { Company } from '../models/company.model.js';
 import { Template } from '../models/template.model.js';
 import { AuditType, SectionDefinition } from '../models/taxonomy.model.js';
 import { Vulnerability } from '../models/vulnerability.model.js';
@@ -72,6 +74,7 @@ import { numberFiguresHtml } from '../services/figures.service.js';
 import { lightenAudit } from '../services/audit-payload.service.js';
 import { planImport } from '../services/findings-import.service.js';
 import { preflightAudit } from '../services/preflight.service.js';
+import { auditSize } from '../services/audit-size.service.js';
 import { remember, restore as restoreRecycled } from '../services/recycle.service.js';
 import { buildFindingsSheet } from '../services/findings-sheet.service.js';
 import { buildEnumerationSheet } from '../services/enumeration-sheet.service.js';
@@ -86,11 +89,12 @@ import {
   notifyCheckAssigned,
   notifyFindingAssigned,
   notifyMentions,
+  notifyOpinionGiven,
   notifyReviewRequested,
+  notifySecondOpinion,
   recordActivity,
 } from '../services/activity.service.js';
 import { Activity } from '../models/activity.model.js';
-import { Notification } from '../models/notification.model.js';
 import { Booking } from '../models/booking.model.js';
 import {
   CLASSIFICATIONS,
@@ -167,7 +171,7 @@ import {
 import { visibleAuditFilter, membershipExpired, today } from '../utils/audit-scope.js';
 import { activityCalendar } from '../services/activity-calendar.service.js';
 import { reviewReadiness } from '../services/review-availability.service.js';
-import { hostBoard, hostDetail } from '../services/host-view.service.js';
+import { hostBoard, hostDetail, hostKey } from '../services/host-view.service.js';
 import { engagementHealth } from '../services/engagement-health.service.js';
 import { EngagementDocument, DOCUMENT_KINDS } from '../models/document.model.js';
 import { PhishingTarget, outcomeOf } from '../models/phishing-target.model.js';
@@ -198,8 +202,14 @@ import { advanceDue } from '../services/recurrence-reminders.service.js';
 import { contentDisposition } from '../utils/content-disposition.js';
 
 import { uploadMemory, uploadDocument } from '../middleware/upload.js';
-import { findingSeverity, calculateCvss, CVSS_DEFAULT_VECTOR } from '../services/cvss.js';
+import {
+  findingSeverity,
+  calculateCvss,
+  orderFindings,
+  CVSS_DEFAULT_VECTOR,
+} from '../services/cvss.js';
 import { User } from '../models/user.model.js';
+import { notify } from '../services/notify.service.js';
 import {
   assertUnlocked,
   describeLock,
@@ -286,6 +296,21 @@ const findingSchema = z.object({
   assignedTo: nullableId,
   remediationStatus: z.enum(REMEDIATION_STATUSES).optional().default('open'),
   /**
+   * Why the client is living with this one.
+   *
+   * The reason is enforced by the route rather than here, for the same shape as `severityOverride`
+   * below: it is required only when the status is `accepted`, and a schema field cannot see
+   * another field's value to know.
+   */
+  riskAcceptance: z
+    .object({
+      reason: z.string().trim().max(2000).optional(),
+      acceptedBy: z.string().trim().max(200).optional(),
+      acceptedAt: z.coerce.date().nullable().optional(),
+      reviewOn: z.string().trim().max(20).optional(),
+    })
+    .optional(),
+  /**
    * A severity the team is standing behind, when it differs from the vector's.
    *
    * The reason is enforced by the route rather than the schema: it is only required when the
@@ -310,6 +335,8 @@ const sectionSchema = z.object({
   field: z.string().trim().min(1),
   name: z.string().trim().min(1),
   text: prose('section'),
+  /** Whether this belongs at the back of the report rather than in the body. */
+  appendix: z.boolean().optional(),
   customFields: z.array(customFieldValue).optional().default([]),
 });
 
@@ -389,6 +416,8 @@ const updateSchema = createSchema.partial().extend({
 
 const POPULATE = [
   { path: 'findings.comments.author', select: 'username firstname lastname' },
+  // Who asked for a second opinion, so the card can say so rather than "somebody".
+  { path: 'findings.secondOpinion.askedBy', select: 'username firstname lastname' },
   // The findings list shows who wrote each one, so these resolve to people.
   { path: 'findings.createdBy', select: 'username firstname lastname' },
   // Who holds a finding, so the editor can name them rather than saying "locked".
@@ -1834,7 +1863,7 @@ router.get(
      */
     const audit = await Audit.findById(req.params.id)
       .select(
-        'creator collaborators reviewers classification classifiedBy deletedAt state updatedAt ' +
+        'creator collaborators reviewers classification classifiedBy deletedAt memberUntil state updatedAt ' +
           'findings._id findings.updatedAt findings.updatedBy findings.lockedBy findings.lockedAt ' +
           'notes._id notes.updatedAt sections._id sections.updatedAt testChecks._id testChecks.updatedAt'
       )
@@ -1852,6 +1881,18 @@ router.get(
         ...(audit.reviewers ?? []).map((r) => r._id?.toString() ?? r.toString()),
       ];
       if (!allowed.includes(uid)) throw forbidden('You do not have access to this engagement');
+      /*
+       * And membership that has run out is not membership.
+       *
+       * This route copies `loadAudit`'s check rather than calling it — the whole point of it is to
+       * be cheap, and `loadAudit` reads the document — and the copy was one rule short. So a
+       * subcontractor whose access ended kept a live feed of the engagement: which findings exist,
+       * when each was last touched, who is editing and who holds a lock. Quieter than reading the
+       * findings and not much less useful.
+       */
+      if (membershipExpired(audit, req.user)) {
+        throw forbidden('Your access to this engagement ended. Ask whoever runs it to extend it.');
+      }
     }
 
     const findings = (audit.findings ?? []).map((finding) => ({
@@ -2053,6 +2094,35 @@ router.put(
       if (changed.includes('severityOverride')) {
         finding.severityOverrideBy = rated.overridden ? req.user._id : null;
         finding.severityOverrideAt = rated.overridden ? new Date() : null;
+      }
+    }
+
+    /*
+     * An accepted risk has to say why, and who said so.
+     *
+     * The same argument as the override above, and a sharper one. "Accepted" is the only status
+     * that closes a finding without anything being fixed — the vulnerability is still there and
+     * the report will say a client chose to live with it. Recorded without a reason that is an
+     * assertion about somebody else's decision with nothing behind it, and it is the first thing
+     * disputed when the finding turns up again next year.
+     *
+     * Stamped rather than trusted: `recordedBy` is whoever pressed the button here, which is a
+     * different question from `acceptedBy` — the person at the client who actually decided.
+     */
+    if (patch.remediationStatus !== undefined || patch.riskAcceptance !== undefined) {
+      if (finding.remediationStatus === 'accepted') {
+        if (!String(finding.riskAcceptance?.reason ?? '').trim()) {
+          throw badRequest(
+            'Say why this risk is being accepted. It prints in the report beside the finding.'
+          );
+        }
+        if (!String(finding.riskAcceptance?.acceptedBy ?? '').trim()) {
+          throw badRequest('Say who accepted it — the person at the client who made the decision.');
+        }
+        if (changed.includes('remediationStatus')) {
+          finding.riskAcceptance.acceptedAt = finding.riskAcceptance.acceptedAt ?? new Date();
+          finding.riskAcceptance.recordedBy = req.user._id;
+        }
       }
     }
 
@@ -2725,6 +2795,19 @@ router.post(
           if (!REMEDIATION_STATUSES.includes(value)) {
             throw badRequest(`"${value}" is not a status a finding can have.`);
           }
+          /*
+           * Not in bulk.
+           *
+           * Every other status here is a fact about our own work and moving nine at once is
+           * ordinary. `accepted` is a claim about a decision somebody at the client made, and it
+           * needs a reason and a name — which are per finding by definition. A bulk action that
+           * set them all to the same reason would be inventing the reason.
+           */
+          if (value === 'accepted') {
+            throw badRequest(
+              'Accepting a risk is done one finding at a time — each needs its own reason and the name of whoever accepted it.'
+            );
+          }
           return value;
         },
       },
@@ -2903,13 +2986,16 @@ router.post(
       );
     }
 
-    /* The order the page shows, which is the order the report prints. */
-    const ordered = [...audit.findings].sort((a, b) =>
-      audit.sortFindings === false
-        ? (a.sortIndex ?? 0) - (b.sortIndex ?? 0)
-        : (calculateCvss(b.cvssv3).baseScore ?? -1) - (calculateCvss(a.cvssv3).baseScore ?? -1) ||
-          String(a.title).localeCompare(String(b.title))
-    );
+    /*
+     * The order the report prints, which is the order the page shows.
+     *
+     * Through `orderFindings` rather than a comparator written here, because the one written here
+     * sorted by the raw vector score and the report sorts by the overridden severity. A finding
+     * argued down from Critical to Medium was given the number of the Critical it no longer was,
+     * and the report printed it five places further down — so pressing this button could leave the
+     * numbers *less* in order than before.
+     */
+    const ordered = orderFindings(audit.findings, { manual: audit.sortFindings === false });
 
     const before = ordered.map((finding) => finding.identifier);
     ordered.forEach((finding, index) => {
@@ -3039,6 +3125,62 @@ const handoverSchema = z.object({
   blockers: z.string().trim().max(4000).optional().default(''),
   credentials: z.string().trim().max(1000).optional().default(''),
 });
+
+/**
+ * The closeout call.
+ *
+ * Its own route rather than a field on the engagement update, for the same reason the handover log
+ * below is its own: it is written once, by whoever was on the call, and often after the engagement
+ * has been approved. `assertEditable` would refuse it at exactly the moment it is written.
+ *
+ * Recording it is not editing the report — the report went out before the call happened.
+ */
+router.put(
+  '/:id/closeout',
+  validate(
+    z.object({
+      heldOn: z.string().trim().max(20).optional(),
+      attendeesOurs: z.string().trim().max(500).optional(),
+      attendeesTheirs: z.string().trim().max(500).optional(),
+      notes: prose('the closeout notes'),
+      disputed: z.string().trim().max(4000).optional(),
+      commitments: z.string().trim().max(4000).optional(),
+      retestOn: z.string().trim().max(20).optional(),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { populate: false });
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    const first = !audit.closeout?.at;
+    audit.closeout = {
+      ...(audit.closeout?.toObject?.() ?? audit.closeout ?? {}),
+      ...req.body,
+      /* Who wrote it down and when, which is not the same as when the call was. */
+      by: req.user._id,
+      at: new Date(),
+    };
+    await audit.save();
+
+    /*
+     * Recorded on the activity log the first time only.
+     *
+     * Correcting a typo in the notes a week later is not "the closeout happened"; saying so twice
+     * would put the end of the job in the timeline twice.
+     */
+    if (first) {
+      await recordActivity({
+        audit,
+        actor: req.user,
+        action: ACTIONS.CLOSEOUT_RECORDED,
+        meta: { heldOn: audit.closeout.heldOn || null },
+      });
+    }
+
+    await audit.populate({ path: 'closeout.by', select: 'username firstname lastname' });
+    res.json(audit.closeout);
+  })
+);
 
 /**
  * The engagement's handover log, newest first.
@@ -5422,6 +5564,151 @@ router.delete(
 );
 
 /* -------------------------------------------------------------------------- */
+/* A second opinion on one finding                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * "Can somebody look at this one."
+ *
+ * Deliberately not gated on `assertEditable`: the question worth asking most often is asked about
+ * a report that is already being reviewed, and a locked engagement is exactly when somebody wants
+ * to check a score before it goes out. Read-only accounts are refused like everywhere else.
+ *
+ * Asking again replaces the question rather than stacking a second one. There is one thing
+ * outstanding about a finding or there is nothing; a queue of questions about one write-up is a
+ * conversation, and comments are where conversations go.
+ */
+router.post(
+  '/:id/findings/:findingId/second-opinion',
+  validate(
+    z.object({
+      question: z.string().trim().max(500).optional().default(''),
+      /** Who to ask. Left out, it is addressed to everybody on the engagement. */
+      of: z
+        .string()
+        .regex(/^[0-9a-fA-F]{24}$/)
+        .optional(),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { populate: false });
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    const finding = audit.findings.id(req.params.findingId);
+    if (!finding) throw notFound('Finding not found');
+
+    finding.secondOpinion = {
+      askedBy: req.user._id,
+      of: req.body.of ?? null,
+      askedAt: new Date(),
+      question: req.body.question ?? '',
+      answeredBy: null,
+      answeredAt: null,
+    };
+    await audit.save();
+
+    await recordActivity({
+      audit,
+      actor: req.user,
+      action: ACTIONS.OPINION_ASKED,
+      target: finding.title,
+      meta: { question: req.body.question || '' },
+    });
+
+    const told = await notifySecondOpinion({
+      of: req.body.of ?? null,
+      /* Everybody who could answer: the people on the engagement, however they got there. */
+      team: [...(audit.collaborators ?? []), ...(audit.reviewers ?? []), audit.creator],
+      actor: req.user,
+      audit,
+      finding,
+      question: req.body.question ?? '',
+    });
+
+    res.status(201).json({ ok: true, told, secondOpinion: finding.secondOpinion });
+  })
+);
+
+/**
+ * Answering it, or taking it back.
+ *
+ * The answer is posted as an ordinary comment on the finding rather than stored here — a second
+ * opinion is worth having because of its reasoning, and the reasoning belongs in the thread the
+ * rest of the review chatter is in, where it is quotable and where the client-facing question of
+ * "why is this a High" can be answered from months later.
+ *
+ * Withdrawing is the same call with no answer, by the person who asked. Said apart in the log,
+ * because "nobody ever answered" and "somebody did" are different facts about a report.
+ *
+ * A PUT rather than a DELETE, because the call carries the answer and a DELETE with a body is a
+ * thing every HTTP client makes awkward — including this one's own helper.
+ */
+router.put(
+  '/:id/findings/:findingId/second-opinion',
+  validate(z.object({ answer: z.string().trim().max(4000).optional().default('') })),
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { populate: false });
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    const finding = audit.findings.id(req.params.findingId);
+    if (!finding) throw notFound('Finding not found');
+    /*
+     * Outstanding, not merely asked-at-some-point.
+     *
+     * Answering a question somebody has already answered would overwrite who answered it and send
+     * the asker a second bell about an opinion they have already read — and the second answer is
+     * usually somebody arriving late at a stale inbox row rather than disagreeing.
+     */
+    const open = finding.secondOpinion;
+    if (!open?.askedAt || open.answeredAt) {
+      throw badRequest('Nothing is outstanding on this finding.');
+    }
+
+    const asker = finding.secondOpinion.askedBy;
+    const answer = req.body.answer ?? '';
+    const withdrawing = !answer && String(asker ?? '') === String(req.user._id);
+
+    if (answer) {
+      finding.comments.push({
+        author: req.user._id,
+        body: answer,
+        /* Not a field comment: the question was about the finding, not about one box of it. */
+        field: '',
+      });
+    }
+
+    finding.secondOpinion.answeredBy = withdrawing ? null : req.user._id;
+    finding.secondOpinion.answeredAt = withdrawing ? null : new Date();
+    if (withdrawing) finding.secondOpinion.askedAt = null;
+    await audit.save();
+
+    await recordActivity({
+      audit,
+      actor: req.user,
+      action: withdrawing ? ACTIONS.OPINION_WITHDRAWN : ACTIONS.OPINION_GIVEN,
+      target: finding.title,
+    });
+
+    if (!withdrawing) {
+      await notifyOpinionGiven({ asker, actor: req.user, audit, finding });
+      if (answer) {
+        await notifyMentions({ body: answer, actor: req.user, audit, finding });
+      }
+    }
+
+    await audit.populate({
+      path: 'findings.comments.author',
+      select: 'username firstname lastname',
+    });
+    res.json({
+      ok: true,
+      withdrawn: withdrawing,
+      comments: audit.findings.id(req.params.findingId).comments,
+    });
+  })
+);
+
+/* -------------------------------------------------------------------------- */
 /* Comments on findings — internal review chatter                             */
 /* -------------------------------------------------------------------------- */
 
@@ -5738,10 +6025,105 @@ router.post(
   })
 );
 
+/**
+ * One host, on one check.
+ *
+ * Its own route rather than a field on the update above, because it is a different gesture: the
+ * update edits a check, this records that a check was carried out somewhere. They have different
+ * permissions in spirit — ticking is not editing the report — and folding them together would mean
+ * a host tick carrying a whole check body it must not be allowed to change.
+ *
+ * The check's own `done` is recomputed from the hosts every time, so every reader of `done` — the
+ * report, the counts, preflight, the dashboard — keeps working without knowing hosts exist. See
+ * `checkIsDone`.
+ */
+router.put(
+  '/:id/test-checks/:checkId/hosts/:key',
+  validate(
+    z.object({
+      done: z.boolean(),
+      result: z.string().trim().max(500).optional(),
+    })
+  ),
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { populate: false });
+    if (req.user.role === 'readonly') throw forbidden('Your account is read-only');
+
+    const check = audit.testChecks.id(req.params.checkId);
+    if (!check) throw notFound('Check not found');
+
+    const key = String(req.params.key ?? '').trim().toLowerCase();
+    /*
+     * The host has to be in the scope.
+     *
+     * Otherwise a checklist could claim coverage of an address nobody agreed to test, which is the
+     * one direction a coverage record must never be wrong in.
+     */
+    const inScope = (audit.scope ?? []).some((group) =>
+      (group.hosts ?? []).some((host) => hostKey(host) === key)
+    );
+    if (!inScope) throw badRequest('That host is not in this engagement’s scope.');
+
+    let entry = (check.hosts ?? []).find((host) => host.key === key);
+    if (!entry) {
+      check.hosts.push({ key });
+      entry = check.hosts.at(-1);
+    }
+
+    const changed = entry.done !== req.body.done;
+    entry.done = req.body.done;
+    entry.doneBy = req.body.done ? req.user._id : null;
+    entry.doneAt = req.body.done ? new Date() : null;
+    if (req.body.result !== undefined) entry.result = req.body.result;
+
+    /*
+     * And the check's own flag, from the hosts.
+     *
+     * Ticking the last host ticks the check; unticking any host unticks it. `doneBy` is whoever
+     * completed the set, which is the honest answer to "who signed this off" when the work was
+     * split between two people.
+     */
+    const wasDone = check.done;
+    check.done = checkIsDone(check);
+    if (check.done !== wasDone) {
+      check.doneBy = check.done ? req.user._id : null;
+      check.doneAt = check.done ? new Date() : null;
+      if (check.done) {
+        check.blocked = false;
+        check.blockedReason = '';
+        check.blockedBy = null;
+        check.blockedAt = null;
+      }
+    }
+
+    await audit.save();
+
+    if (changed) {
+      await recordActivity({
+        audit,
+        actor: req.user,
+        action: req.body.done ? ACTIONS.CHECK_TICKED : ACTIONS.CHECK_UNTICKED,
+        target: check.title,
+        meta: { host: key },
+      });
+    }
+
+    await audit.populate(CHECK_POPULATE);
+    res.json({ check: audit.testChecks.id(check._id) });
+  })
+);
+
 router.put(
   '/:id/test-checks/:checkId',
   validate(
     testCheckSchema.partial().extend({
+      /**
+       * Which hosts this check is tracked against.
+       *
+       * Addresses, from the scope. An empty array turns per-host tracking off and the check goes
+       * back to being one tick for the engagement, which is what most of them should stay.
+       */
+      hosts: z.array(z.string().trim().max(200)).max(500).optional(),
       done: z.boolean().optional(),
       /** Cannot be done, and why. The reason is enforced by the route, not the schema. */
       blocked: z.boolean().optional(),
@@ -5761,18 +6143,62 @@ router.put(
     const check = audit.testChecks.id(req.params.checkId);
     if (!check) throw notFound('Check not found');
 
-    const { done, assignedTo, blocked, blockedReason, ...rest } = req.body;
+    const { done, assignedTo, blocked, blockedReason, hosts, ...rest } = req.body;
     // Editing the wording of a check is a report change; ticking is not, and neither is
     // handing one to a colleague — a signed-off engagement can still have its list divided up.
     if (Object.keys(rest).length) assertEditable(audit, req.user);
     const resultBefore = check.result;
     check.set(rest);
 
+    /*
+     * Which hosts this check is tracked against.
+     *
+     * Merged rather than replaced: a host already in the list keeps whatever was recorded against
+     * it, so adding a thirteenth host to a check does not discard the twelve ticks already there.
+     * Hosts dropped from the list lose their entry, which is the intended meaning of dropping one.
+     *
+     * Scoped to the scope, for the reason the per-host route is: a coverage record must not be
+     * able to claim an address nobody agreed to test.
+     */
+    if (hosts !== undefined) {
+      assertEditable(audit, req.user);
+      const inScope = new Set(
+        (audit.scope ?? []).flatMap((group) => (group.hosts ?? []).map((host) => hostKey(host)))
+      );
+      const wanted = [...new Set(hosts.map((key) => String(key).trim().toLowerCase()))].filter(
+        (key) => key && inScope.has(key)
+      );
+      const existing = new Map((check.hosts ?? []).map((host) => [host.key, host]));
+      check.hosts = wanted.map(
+        (key) => existing.get(key) ?? { key, done: false, doneBy: null, doneAt: null, result: '' }
+      );
+      /* The flag follows, the same way it does on a per-host tick. */
+      check.done = checkIsDone(check);
+      if (!check.done) {
+        check.doneBy = null;
+        check.doneAt = null;
+      }
+    }
+
     const assignedBefore = idOf(check.assignedTo);
     if (assignedTo !== undefined) {
       check.assignedTo = assignedTo ? assertAssignable(audit, assignedTo, 'a check') : null;
     }
     const assignmentChanged = assignedTo !== undefined && idOf(check.assignedTo) !== assignedBefore;
+
+    /*
+     * A check tracked per host cannot be ticked directly.
+     *
+     * `done` on such a check means "every host is done", and setting it by hand would assert
+     * coverage of hosts nobody ticked — the exact claim per-host tracking exists to stop being
+     * guesswork. Said rather than silently ignored, because a tick that appears to work and then
+     * comes back unticked is worse than a refusal.
+     */
+    if (done !== undefined && (check.hosts ?? []).length) {
+      throw badRequest(
+        'This check is tracked per host, so tick the hosts rather than the check. It ticks itself when they are all done.'
+      );
+    }
 
     const ticked = done !== undefined && done !== check.done;
     if (ticked) {
@@ -5914,6 +6340,24 @@ router.delete(
 /* Preflight and scan import                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * How close this engagement is to the 16 MB a MongoDB document can hold.
+ *
+ * Its own route, and a cheap one: `loadAudit` with no projection would read the whole engagement to
+ * answer a question about its size, which on exactly the engagements this matters for is the most
+ * expensive possible way to ask. `only: ''` takes the base fields the access check needs and
+ * nothing else, and `auditSize` asks the database to measure what it already holds.
+ *
+ * See `audit-size.service.js` for why anybody needs told.
+ */
+router.get(
+  '/:id/size',
+  asyncHandler(async (req, res) => {
+    const audit = await loadAudit(req, { populate: false, only: '' });
+    res.json((await auditSize(audit._id)) ?? { bytes: 0, limit: 0, percent: 0, level: 'fine', parts: [] });
+  })
+);
+
 /** What is missing or suspicious before this becomes a client deliverable. */
 router.get(
   '/:id/preflight',
@@ -5940,8 +6384,28 @@ router.get(
         ? await Template.findById(audit.template._id ?? audit.template).select('detectedTags').lean()
         : null;
 
+    /*
+     * Every other client's name, for the copy-paste check.
+     *
+     * Names only, and the whole list: an instance with two hundred clients is two hundred short
+     * strings, which is cheaper to fetch than the media weights above and is the only way to
+     * catch a paragraph copied from a client this engagement has nothing to do with.
+     */
+    const ours = String(audit.company?._id ?? audit.company ?? '');
+    const otherClients = (await Company.find({}).select('name shortName').lean())
+      .filter((company) => String(company._id) !== ours)
+      .map((company) => ({
+        label: company.name || company.shortName || 'another client',
+        names: [company.name, company.shortName].map((n) => String(n ?? '').trim()).filter(Boolean),
+      }))
+      .filter((company) => company.names.length);
+
     res.json(
-      preflightAudit(audit, { media, templateTags: template?.detectedTags ?? null })
+      preflightAudit(audit, {
+        media,
+        templateTags: template?.detectedTags ?? null,
+        otherClients,
+      })
     );
   })
 );
@@ -8225,7 +8689,7 @@ router.post(
 
     const recipients = await peopleToStandDown(audit, req.user);
     if (recipients.length) {
-      await Notification.insertMany(
+      await notify(
         recipients.map((id) => ({
           user: id,
           type: 'engagement-held',
@@ -8269,7 +8733,7 @@ router.delete(
 
     const recipients = await peopleToStandDown(audit, req.user);
     if (recipients.length) {
-      await Notification.insertMany(
+      await notify(
         recipients.map((id) => ({
           user: id,
           type: 'engagement-held',
@@ -8582,8 +9046,19 @@ router.post(
       (await PhishingTarget.find({ audit: audit._id }).select('email')).map((row) => row.email)
     );
 
+    /*
+     * One write, not one per target.
+     *
+     * This accepts up to five thousand addresses, and it used to `await updateOne` for each of
+     * them — five thousand sequential round trips for one paste of a staff list, with the request
+     * held open for all of them. `bulkWrite` sends the same upserts in batches the driver manages.
+     *
+     * `ordered: false` because the operations are independent: one malformed row should not stop
+     * the four thousand behind it, and there is no sequence here to preserve.
+     */
     let added = 0;
     let updated = 0;
+    const operations = [];
     for (const target of req.body.targets) {
       /*
        * The address is the filter and belongs only in the insert half.
@@ -8592,20 +9067,30 @@ router.post(
        * would be saying different things about the same key on the same write.
        */
       const { email, ...rest } = target;
-      await PhishingTarget.updateOne(
-        { audit: audit._id, email },
-        {
-          $set: { ...rest, updatedBy: req.user._id },
-          $setOnInsert: { audit: audit._id, email, addedBy: req.user._id },
+      operations.push({
+        updateOne: {
+          filter: { audit: audit._id, email },
+          update: {
+            $set: { ...rest, updatedBy: req.user._id },
+            $setOnInsert: { audit: audit._id, email, addedBy: req.user._id },
+          },
+          upsert: true,
         },
-        { upsert: true }
-      );
+      });
+      /*
+       * Counted here rather than read off the result.
+       *
+       * `bulkWrite` reports `modifiedCount`, which excludes a row re-imported unchanged — so a
+       * second import of the same list would report nothing updated when every row was written.
+       * The set already knows which addresses were there before, which is the question being asked.
+       */
       if (existing.has(email)) updated += 1;
       else {
         added += 1;
         existing.add(email);
       }
     }
+    if (operations.length) await PhishingTarget.bulkWrite(operations, { ordered: false });
 
     await recordActivity({
       audit,
@@ -9932,9 +10417,14 @@ router.get(
      * the media below is inlined: this reads `/api/media/<id>` to know which picture is which, and
      * a moment later those are data URIs.
      */
-    if (settings.report?.public?.figureNumbering !== false) {
+    const numberFigures = settings.report?.public?.figureNumbering !== false;
+    const numberTables = settings.report?.public?.tableNumbering !== false;
+    if (numberFigures || numberTables) {
       html = numberFiguresHtml(html, {
         label: settings.report?.public?.figureLabel || 'Figure',
+        tableLabel: settings.report?.public?.tableLabel || 'Table',
+        numberFigures,
+        numberTables,
       }).html;
     }
 

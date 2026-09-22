@@ -13,7 +13,12 @@
  * tool that refuses to produce one is a tool people work around.
  */
 
-import { calculateCvss, CVSS_DEFAULT_VECTOR, CVSS4_DEFAULT_VECTOR } from './cvss.js';
+import {
+  calculateCvss,
+  orderFindings,
+  CVSS_DEFAULT_VECTOR,
+  CVSS4_DEFAULT_VECTOR,
+} from './cvss.js';
 import { htmlToPlainText } from './ooxml/html-parser.js';
 import { danglingReferences, figuresOf } from './figures.service.js';
 
@@ -21,6 +26,40 @@ import { danglingReferences, figuresOf } from './figures.service.js';
 const PLACEHOLDER_RE = /\b(TODO|TBA|TBC|FIXME|XXX|LOREM IPSUM|PLACEHOLDER|\[.{0,20}\]\s*$)/i;
 /** Names that suggest the template's example text was never replaced. */
 const SAMPLE_RE = /\b(acme|example\.com|example\.org|foo|bar|test client|client name)\b/i;
+
+/**
+ * The shortest client name worth looking for in somebody's prose.
+ *
+ * Three characters and under produce false positives faster than they produce findings — a client
+ * called "IT", "Sky" or "EY" would flag every paragraph that used the word. The check is only
+ * worth having if people trust it, and a check that cries wolf on ordinary English is one people
+ * turn off.
+ */
+const NAME_MIN = 4;
+
+/**
+ * Words that are somebody's client name *and* ordinary English.
+ *
+ * A company genuinely called "Data", "Group" or "Systems" would otherwise make this check fire on
+ * half the report. Skipped rather than matched loosely: missing one real leak is better than
+ * producing thirty false ones, because the thirty are what make somebody stop reading the list.
+ */
+const TOO_COMMON = new Set([
+  'data',
+  'group',
+  'systems',
+  'services',
+  'solutions',
+  'technology',
+  'technologies',
+  'digital',
+  'global',
+  'security',
+  'consulting',
+  'partners',
+  'holdings',
+  'international',
+]);
 
 const plain = (html) => htmlToPlainText(html ?? '').trim();
 const isBlank = (html) => plain(html) === '';
@@ -32,6 +71,16 @@ const isBlank = (html) => plain(html) === '';
  * here, not something that silently starts being checked.
  */
 const FIGURE_FIELDS = ['description', 'observation', 'remediation', 'poc'];
+
+/**
+ * A chip pointing at another finding, as the editor stores it.
+ *
+ * Matched here rather than imported from `report.service.js`, which would pull the whole report
+ * builder into preflight for one expression. Kept identical to `FINDING_REFERENCE` there, and the
+ * suite checks both against the same markup so they cannot drift apart unnoticed.
+ */
+const FINDING_REFERENCE =
+  /<span\b[^>]*\bdata-findingref="([0-9a-f]{24})"[^>]*>([\s\S]*?)<\/span>/gi;
 
 /** @typedef {{level:'blocker'|'warning'|'note', code:string, message:string,
  *   detail?:string, where?:string, findingId?:string, tab?:string}} PreflightIssue */
@@ -56,7 +105,128 @@ const inMb = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
  *   function deliberately does not
  * @returns {{ready:boolean, counts:object, issues:PreflightIssue[], checked:number}}
  */
-export function preflightAudit(audit, { media = null, templateTags = null } = {}) {
+/**
+ * Another client's name, left in prose that was copied from their report.
+ *
+ * The worst realistic mistake in this trade, and the only one on this list that ends a
+ * relationship. Somebody writes up an issue by copying the paragraph they wrote for a different
+ * client last month, changes the hostname, and misses the company name in the third sentence.
+ * Nothing in the app looked at the words, so nothing could catch it.
+ *
+ * Checked against the *other* clients on this instance — this engagement's own client is expected
+ * in its own report and is never flagged. Names too short or too ordinary are skipped; see
+ * `NAME_MIN` and `TOO_COMMON` for why a check nobody trusts is worse than no check.
+ *
+ * A **blocker**, not a warning. Every other prose problem here produces an awkward report; this
+ * one puts one client's name in another client's document.
+ *
+ * @param {{names: string[], label: string}[]} others other clients, each with the names to look for
+ */
+function foreignNames(text, others) {
+  const found = [];
+  for (const other of others) {
+    for (const name of other.names) {
+      if (name.length < NAME_MIN) continue;
+      if (TOO_COMMON.has(name.toLowerCase())) continue;
+      /* Word boundaries, so "Northwind" does not match inside "northwindow". */
+      const pattern = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (pattern.test(text)) {
+        found.push(other.label);
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Roughly how many pages the report will run to.
+ *
+ * Counted from the material rather than from a rendered document, because the point is to answer
+ * the question *before* generating: nobody renders a draft to find out it is ninety pages.
+ *
+ * The constants are the only interesting part and they are all approximations of one thing — how
+ * much of a page something takes in an A4 report at eleven point:
+ *
+ *   500 words     a full page of prose
+ *   3 screenshots a page, since evidence is usually half-width and captioned
+ *   40 table rows a page
+ *   1 page        for each finding, which most templates start on a fresh one
+ *
+ * Returned as a range because a single number would be trusted. The spread is ±25%, which is about
+ * the difference a template's margins and type size actually make.
+ */
+export function estimatePages(audit, media = null) {
+  const text = (html) => htmlToPlainText(html ?? '');
+  const words = (value) => {
+    const trimmed = text(value).trim();
+    return trimmed ? trimmed.split(/\s+/).length : 0;
+  };
+
+  let total = 0;
+  let rows = 0;
+  for (const section of audit.sections ?? []) total += words(section.text);
+  for (const finding of audit.findings ?? []) {
+    total += words(finding.description) + words(finding.observation);
+    total += words(finding.remediation) + words(finding.poc) + words(finding.scope);
+  }
+  /* Enumeration output prints as a pane, and a pane's lines are not words — count them as rows. */
+  for (const step of audit.enumeration ?? []) {
+    const output = String(step.output ?? '');
+    if (output) rows += output.split(/\r?\n/).length;
+    total += words(step.content);
+  }
+
+  const findings = (audit.findings ?? []).length;
+  const sections = (audit.sections ?? []).length;
+  const images = media?.count ?? countImages(audit);
+
+  const pages = Math.max(
+    1,
+    Math.ceil(total / 500 + images / 3 + rows / 40 + findings * 0.6 + sections * 0.4)
+  );
+
+  return {
+    pages,
+    low: Math.max(1, Math.round(pages * 0.75)),
+    high: Math.round(pages * 1.25),
+    words: total,
+    images,
+    findings,
+  };
+}
+
+/** Screenshots in the prose, when the caller has not already weighed the media. */
+function countImages(audit) {
+  let count = 0;
+  const walk = (html) => {
+    count += (String(html ?? '').match(/<img\b/gi) ?? []).length;
+  };
+  for (const section of audit.sections ?? []) walk(section.text);
+  for (const finding of audit.findings ?? []) {
+    walk(finding.description);
+    walk(finding.observation);
+    walk(finding.remediation);
+    walk(finding.poc);
+  }
+  return count;
+}
+
+export function preflightAudit(
+  audit,
+  {
+    media = null,
+    templateTags = null,
+    /**
+     * Every *other* client on this instance, for the copy-paste check above.
+     *
+     * Passed in rather than queried, like the media weights: this function is pure and is called
+     * from three places, and a database read inside it would make two of them slower for a check
+     * the third already has the data for.
+     */
+    otherClients = [],
+  } = {}
+) {
   /** @type {PreflightIssue[]} */
   const issues = [];
   const add = (level, code, message, extra = {}) =>
@@ -245,6 +415,20 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
         tab: 'sections',
       });
     }
+    /*
+     * And somebody else's name.
+     *
+     * More likely here than on a finding, not less: an executive summary is the most-reused piece
+     * of prose in this trade, and the sentence that names the client is usually the first one.
+     */
+    const foreign = foreignNames(text, otherClients);
+    if (foreign.length) {
+      add('blocker', 'other-client-named', `"${section.name}" names another client.`, {
+        detail: `It mentions ${foreign.join(', ')}. That is almost always a paragraph copied from their report — read the whole section, not just the name.`,
+        where: section.name,
+        tab: 'sections',
+      });
+    }
   }
 
   /* -------------------------------- findings -------------------------------- */
@@ -256,6 +440,38 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
       tab: 'findings',
     });
   }
+
+  /*
+   * The numbers a reader sees, in the order they see them.
+   *
+   * An identifier is allocated when a finding is written and then never moves, which is the right
+   * trade — a client writing remediation tickets against VULN-04 must keep getting the same
+   * finding — but it means two deleted drafts and a reorder leave the report reading VULN-01,
+   * VULN-04, VULN-07. Nothing said so before generating, and the .docx is where people noticed.
+   *
+   * A note rather than a warning, and deliberately so: the sequence is untidy, not wrong, and on a
+   * re-issue it is not even fixable. Renumbering is refused once anything has been delivered.
+   */
+  if (findings.length > 1) {
+    const printed = orderFindings(findings, { manual: audit.sortFindings === false });
+    const ragged = printed.some((finding, index) => (finding.identifier ?? index + 1) !== index + 1);
+    if (ragged) {
+      const reads = printed
+        .slice(0, 5)
+        .map((finding, index) => String(finding.identifier ?? index + 1).padStart(2, '0'));
+      add('note', 'finding-numbering', 'The findings do not print as a clean run of numbers.', {
+        detail: `They read ${reads.join(', ')}${
+          printed.length > 5 ? ', …' : ''
+        } — deleting a draft or reordering leaves gaps. Renumber on the findings tab puts them in order; it is refused once a report has been delivered, because the numbers the client already holds are the ones to keep.`,
+        tab: 'findings',
+      });
+    }
+  }
+
+  /* Which findings a reference could still point at, for the dangling check below. */
+  const printedFindingIds = new Set(
+    findings.map((finding) => String(finding._id ?? '').toLowerCase()).filter(Boolean)
+  );
 
   const seenTitles = new Map();
   for (const finding of findings) {
@@ -320,6 +536,31 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
       );
     }
 
+    /*
+     * A sentence pointing at a finding that is not in this report.
+     *
+     * The same failure as a dangling figure reference and caught the same way: the finding was
+     * deleted after the sentence naming it was written, and the document will print "(finding
+     * removed)" where the identifier should be. Better found here than by the client.
+     *
+     * Checked against every finding that will be printed — not the whole engagement — because a
+     * reference to something held back is dangling as far as this deliverable is concerned.
+     */
+    for (const field of FIGURE_FIELDS) {
+      for (const match of String(finding[field] ?? '').matchAll(FINDING_REFERENCE)) {
+        if (printedFindingIds.has(match[1].toLowerCase())) continue;
+        add(
+          'warning',
+          'dangling-finding-reference',
+          `"${label}" refers to a finding that is not in this report.`,
+          {
+            ...at,
+            detail: `The reference reads "${match[2].replace(/<[^>]+>/g, '') || 'a finding'}" in the ${field}. It will print as "(finding removed)".`,
+          }
+        );
+      }
+    }
+
     // Duplicate titles are usually two people writing up the same issue.
     const key = label.trim().toLowerCase();
     if (key && seenTitles.has(key)) {
@@ -378,6 +619,19 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
           detail: firstMatch(text, PLACEHOLDER_RE),
         });
       }
+      /* Somebody else's name, in a paragraph copied from somebody else's report. */
+      const foreign = foreignNames(text, otherClients);
+      if (foreign.length) {
+        add(
+          'blocker',
+          'other-client-named',
+          `"${label}" names another client in ${field}.`,
+          {
+            ...at,
+            detail: `The ${field} mentions ${foreign.join(', ')}. That is almost always a paragraph copied from their report — check the whole field, not just the name.`,
+          }
+        );
+      }
     }
 
     const unresolved = (finding.comments ?? []).filter((c) => !c.resolved).length;
@@ -421,6 +675,34 @@ export function preflightAudit(audit, { media = null, templateTags = null } = {}
   if (audit.state === 'EDIT' && findings.length > 0) {
     add('note', 'still-editing', 'This engagement is still marked in progress.', {
       detail: 'Move it to review when the writing is done.',
+      tab: 'overview',
+    });
+  }
+
+  /* ------------------------------- how long it will be ----------------------- */
+
+  /*
+   * An estimate of the page count, before there is a document to count.
+   *
+   * "Is this a forty-page report or a ninety-page one" decides whether the executive summary needs
+   * cutting, and the only way to find out was to generate it and open it in Word. Nobody does that
+   * on a draft, so the answer arrived when it was too late to act on.
+   *
+   * Deliberately rough, and said so. The real number depends on the template's margins, its type
+   * size and where its page breaks fall — none of which this can see. What it can see is the
+   * material: words at roughly 500 to a page, screenshots at about a third of a page each, table
+   * rows at forty, and a page for each section and finding that starts on a fresh one in most
+   * templates. That is close enough for the decision it informs and no closer, so it is reported
+   * as a range rather than a number, because a single figure would be believed.
+   */
+  const estimate = estimatePages(audit, media);
+  if (estimate.pages >= 1) {
+    add('note', 'length-estimate', `This will come to roughly ${estimate.low}–${estimate.high} pages.`, {
+      detail:
+        `About ${estimate.words.toLocaleString()} words, ${estimate.images} screenshot${
+          estimate.images === 1 ? '' : 's'
+        } and ${estimate.findings} finding${estimate.findings === 1 ? '' : 's'}. ` +
+        'A rough guide only — your template’s margins, type size and page breaks decide the real figure.',
       tab: 'overview',
     });
   }

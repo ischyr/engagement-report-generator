@@ -9,8 +9,9 @@
  */
 
 import { parseHtml, parseStyle } from './html-parser.js';
-import { readImageSize, fitToPage } from './image-size.js';
+import { readImageSize, fitToPage, scaleToWidth } from './image-size.js';
 import { captionPrefix, referenceField } from './figure-fields.js';
+import { highlight, detectLanguage } from './code-highlight.js';
 
 const escapeXml = (value) =>
   String(value ?? '')
@@ -55,13 +56,157 @@ const normaliseColor = (value) => {
 const ALIGN_MAP = { left: 'left', center: 'center', right: 'right', justify: 'both' };
 
 /**
+ * A table's column widths in twips, from whatever the editor recorded.
+ *
+ * ProseMirror writes `colwidth` on a cell as a comma-separated list — one entry per column the
+ * cell spans, in the editor's own CSS pixels, and `0` for a column nobody has touched. Any row can
+ * carry it, and in practice only the rows somebody dragged do, so every row is read and the first
+ * width found for a column wins.
+ *
+ * The numbers are turned into a ratio and scaled to `total`, because the absolute values are a
+ * fact about somebody's browser window rather than about the page. Columns nobody sized share what
+ * is left over, at least a minimum each so a table of one sized column and five untouched ones
+ * does not print five hairlines.
+ *
+ * With nothing recorded at all — a table pasted from a spreadsheet, or one written before the
+ * editor could resize — every column is equal, which is exactly what happened before.
+ */
+function columnWidths(rows, columnCount, total) {
+  const found = new Array(columnCount).fill(0);
+
+  for (const row of rows) {
+    let column = 0;
+    for (const cell of row.children ?? []) {
+      if (cell.type !== 'element' || (cell.tag !== 'td' && cell.tag !== 'th')) continue;
+      const span = Math.max(1, Number(cell.attrs.colspan) || 1);
+      const declared = String(cell.attrs.colwidth ?? '')
+        .split(',')
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      for (let i = 0; i < span; i += 1) {
+        const at = column + i;
+        if (at < columnCount && !found[at] && declared[i]) found[at] = declared[i];
+      }
+      column += span;
+    }
+  }
+
+  const equal = Math.floor(total / columnCount);
+  if (!found.some(Boolean)) return new Array(columnCount).fill(equal);
+
+  /*
+   * A column nobody sized is given the average of the ones that were, so it is a column rather
+   * than a sliver — and then the whole lot is scaled to the page, so the ratio is what survives.
+   */
+  const sized = found.filter(Boolean);
+  const average = sized.reduce((sum, w) => sum + w, 0) / sized.length;
+  const guessed = found.map((w) => w || average);
+  const sum = guessed.reduce((a, b) => a + b, 0);
+
+  /** No column narrower than this, whatever the ratio says: a 40-twip column prints as a line. */
+  const FLOOR = 400;
+  const scaled = guessed.map((w) => Math.max(FLOOR, Math.floor((w / sum) * total)));
+
+  /*
+   * Rounding and the floor both cost width, and a grid that adds up to more than the page makes
+   * Word reflow the whole table. The last column absorbs the difference, which is where a reader
+   * is least likely to notice a few twips.
+   */
+  const over = scaled.reduce((a, b) => a + b, 0) - total;
+  if (over !== 0) {
+    scaled[scaled.length - 1] = Math.max(FLOOR, scaled[scaled.length - 1] - over);
+  }
+  return scaled;
+}
+
+/**
+ * How wide one character of the pane is, in twips.
+ *
+ * Consolas advances 1126 of its 2048 em units, which at 9pt — `w:sz 18` — is 98.96 twips. The
+ * gutter has always been sized at a hundred a digit on the same arithmetic. This is deliberately
+ * a little wider than the truth, so the wrap this file computes falls *before* the one Word would
+ * compute. Being out by a character leaves a short line; being out the other way would hand the
+ * wrapping back to Word, which is the bug the wrapping exists to fix.
+ *
+ * Erring wide is also why `<w:noWrap/>` stays off the code cell. If the estimate is ever wrong —
+ * a machine without Consolas substituting something broader — Word wraps the line and its number
+ * is out by one, which is the old behaviour for that line and nothing worse. With `noWrap` it
+ * would silently lose the end of it instead.
+ */
+const CODE_CHAR_TWIPS = 105;
+
+/** No pane narrower than this, however deeply indented: a two-character column is not a pane. */
+const MIN_CODE_COLUMNS = 24;
+
+/**
  * Code-block looks. `terminal` renders a dark, padded pane so command output
  * reads as a console session; `light` is a pale reviewer-friendly box; `template`
  * defers to the template's own `CodeBlock` paragraph style if it defines one.
  */
 export const CODE_THEMES = {
-  terminal: { fill: '0D1117', text: 'E6EDF3', border: '30363D', accent: '7EE787' },
-  light: { fill: 'F6F8FA', text: '24292F', border: 'D0D7DE', accent: '116329' },
+  terminal: {
+    fill: '0D1117',
+    text: 'E6EDF3',
+    border: '30363D',
+    accent: '7EE787',
+    /** The line-number column: present enough to count by, quiet enough to read past. */
+    gutter: '6E7681',
+    gutterRule: '30363D',
+    /**
+     * One colour per token kind. The kinds come from `code-highlight.js`; anything it does not
+     * recognise stays `text`, so a theme that omits a kind degrades to the single colour this
+     * pane had before rather than to something unreadable.
+     */
+    tokens: {
+      keyword: 'FF7B72',
+      string: 'A5D6FF',
+      number: '79C0FF',
+      comment: '8B949E',
+      punct: '8B949E',
+      key: 'D2A8FF',
+      accent: '7EE787',
+    },
+  },
+  light: {
+    fill: 'F6F8FA',
+    text: '24292F',
+    border: 'D0D7DE',
+    accent: '116329',
+    gutter: '8C959F',
+    gutterRule: 'D0D7DE',
+    tokens: {
+      keyword: 'CF222E',
+      string: '0A3069',
+      number: '0550AE',
+      comment: '6E7781',
+      punct: '6E7781',
+      key: '8250DF',
+      accent: '116329',
+    },
+  },
+};
+
+/**
+ * Callout boxes: a note, a warning, the thing the reader must not miss.
+ *
+ * Every report has these — "this was not exploited further because the client asked us to stop",
+ * "the fix below breaks single sign-on" — and until now every one of them was an ordinary
+ * paragraph starting with the word "Note:", which is to say it looked like the paragraph before it
+ * and got read at the same speed.
+ *
+ * Four kinds and no more. A palette with seven is a palette nobody can keep straight, and the
+ * distinction that actually matters in a penetration test report is: here is context, here is
+ * something that will bite you, here is something dangerous, here is what we recommend.
+ *
+ * The colours are the severity palette's neighbours rather than the palette itself. A callout
+ * shaded the exact red of a Critical finding reads as a severity when it is not one, which in a
+ * document where red means Critical is a real misreading rather than a stylistic quibble.
+ */
+export const CALLOUTS = {
+  note: { label: 'Note', fill: 'EFF6FF', border: '3B82F6', text: '1E3A5F' },
+  tip: { label: 'Recommended', fill: 'F0FDF4', border: '22C55E', text: '14532D' },
+  warning: { label: 'Warning', fill: 'FFFBEB', border: 'F59E0B', text: '78350F' },
+  danger: { label: 'Danger', fill: 'FEF2F2', border: 'EF4444', text: '7F1D1D' },
 };
 
 /** Fallback direct formatting for heading levels a template does not define. */
@@ -107,6 +252,19 @@ class OoxmlWriter {
     this.figureNumbering = options.figureNumbering !== false;
     this.figureLabel = options.figureLabel || 'Figure';
     /**
+     * Whether a captioned table is numbered — "Table 3 — Hosts in scope".
+     *
+     * A separate setting from `figureNumbering` because the two have different answers: a house
+     * whose template numbers its own figures may still want tables numbered, and a report with
+     * three screenshots and eleven tables cares about this one far more.
+     *
+     * Only *captioned* tables are numbered — see `#table` — so turning this on does not put a
+     * number on the two-row comparison inside somebody's paragraph.
+     */
+    this.tableNumbering = options.tableNumbering !== false;
+    /** The word in front of the number. Word's `SEQ Table` counter is used whatever this says. */
+    this.tableLabel = options.tableLabel || 'Table';
+    /**
      * Pictures written but not yet captioned, oldest first.
      *
      * Every stored picture becomes a numbered figure, whether or not anybody wrote a caption for
@@ -131,7 +289,38 @@ class OoxmlWriter {
     this.recordingFigures = new Set();
     /** Set while a caption is being written, so writing one cannot start another. */
     this.suppressCaption = false;
+    /**
+     * A caption paragraph waiting for the table it names, set by `render` one node ahead.
+     *
+     * Cleared by `#table` as it takes it, and never read by anything else — so a marked paragraph
+     * whose table turned out to be empty leaves nothing behind for the next table to pick up.
+     */
+    this.pendingTableCaption = null;
     this.codeTheme = options.codeTheme ?? 'terminal';
+    /**
+     * Whether code panes are coloured by what the text is.
+     *
+     * On by default, because it adds colour and moves nothing: every character stays where it was,
+     * in the same font at the same size, and a reader who does not care sees the same pane slightly
+     * easier to skim. Off is for a house style that wants one ink, and for the reader who prints in
+     * greyscale and would rather have contrast than hue.
+     *
+     * Never applied to the `template` theme — that theme exists to hand the pane to the document's
+     * own `CodeBlock` style, and direct run colours are the one thing that would override it.
+     */
+    this.codeHighlight = options.codeHighlight !== false;
+    /**
+     * Whether code panes carry a line-number column.
+     *
+     * Off by default, and deliberately, because it has a cost the other presentation settings do
+     * not: a reader who selects a pane in Word to copy a command out of it gets the numbers too.
+     * Worth it when the prose says "line 14"; not worth it for a three-line curl.
+     *
+     * A pane whose lines are not contiguous turns this on for itself regardless — see
+     * `#codeBlock`. Skipping from line 40 to line 187 without saying so would be a lie about the
+     * evidence, and the numbers are how it stops being one.
+     */
+    this.codeLineNumbers = Boolean(options.codeLineNumbers);
     this.availableStyles = options.availableStyles ?? null;
     /**
      * The width of the page's text column, in twentieths of a point.
@@ -309,6 +498,16 @@ class OoxmlWriter {
             out += this.#figureReference(attrs['data-figref'], marks, children);
             continue;
           }
+          /*
+           * A footnote, written in the editor as `<span data-footnote>the aside</span>`.
+           *
+           * The words inside are the note, not the sentence: what the reader sees in the body is a
+           * superscript number, and the words go to the foot of the page.
+           */
+          if (attrs['data-footnote'] !== undefined) {
+            out += this.#footnote(children, marks);
+            continue;
+          }
           break;
         case 'strong':
         case 'b':
@@ -416,9 +615,22 @@ class OoxmlWriter {
       w: Number.isFinite(widthAttr) && widthAttr > 0 ? widthAttr : sniffed?.width ?? 600,
       h: Number.isFinite(heightAttr) && heightAttr > 0 ? heightAttr : sniffed?.height ?? 400,
     };
-    // 635 EMU to the twip (914400 per inch / 1440 twips per inch), so evidence is clamped to
-    // the real column rather than to a hardcoded six inches.
-    const { cx, cy } = fitToPage(px.w, px.h, this.usableTwips * 635);
+    /*
+     * How wide it prints.
+     *
+     * 635 EMU to the twip (914400 per inch / 1440 twips per inch), so evidence is measured against
+     * the real column rather than a hardcoded six inches — and against the *cell's* column when it
+     * is in one, which is what lets two screenshots sit in a two-column table and each come out
+     * the size of its half.
+     *
+     * `data-width` is a share of that column, in per cent, and it is the only thing that will
+     * enlarge a picture. Without it the old rule stands: natural size, shrunk if it does not fit.
+     */
+    const share = Number(attrs['data-width']);
+    const asked = Number.isFinite(share) && share > 0 && share <= 100 ? share : null;
+    const { cx, cy } = asked
+      ? scaleToWidth(px.w, px.h, Math.round(this.usableTwips * (asked / 100)) * 635)
+      : fitToPage(px.w, px.h, this.usableTwips * 635);
     const { rId, docPrId, name } = this.parts.addImage(buffer, ext === 'jpeg' ? 'jpg' : ext);
 
     /*
@@ -549,6 +761,42 @@ class OoxmlWriter {
     return referenceField(this.parts.figureBookmark(media).name);
   }
 
+  /**
+   * A footnote: a superscript mark here, the words at the foot of the page.
+   *
+   * What this is for is the sentence every report carries and nowhere sensible to put: the tool
+   * version, the reason something was not pursued, the caveat on a measurement. Inline it
+   * interrupts the sentence; in the body it is a paragraph nobody asked for; in an appendix it is
+   * too far from what it qualifies.
+   *
+   * Word numbers them, through `<w:footnoteRef/>` inside the note itself — so a note inserted
+   * ahead of another renumbers both, and the client's own edits keep doing so afterwards. Nothing
+   * here counts anything.
+   *
+   * **A template with no footnote part gets a parenthetical instead.** That is the honest
+   * degradation: the words are what the writer meant and they still reach the reader, in the one
+   * place that needs no part to exist. See `addFootnote` for why the part is not created.
+   */
+  #footnote(children, marks) {
+    const body = this.#inline(children, marks);
+    if (!body.trim()) return '';
+
+    const id = this.parts?.addFootnote?.(
+      '<w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>' +
+        /* The note's own number, which is what makes Word renumber them for itself. */
+        '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>' +
+        '<w:r><w:t xml:space="preserve"> </w:t></w:r>' +
+        `${body}</w:p>`
+    );
+
+    if (!id) return this.#textRun(' (', marks) + body + this.#textRun(')', marks);
+
+    return (
+      '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr>' +
+      `<w:footnoteReference w:id="${id}"/></w:r>`
+    );
+  }
+
   /* -------------------------------- blocks -------------------------------- */
 
   #hasBlockChild(nodes) {
@@ -573,6 +821,12 @@ class OoxmlWriter {
       }
     };
 
+    /* The next element, so a caption can see whether it has a table to belong to. */
+    const elements = nodes.filter((node) => node.type === 'element');
+    const nextElement = new Map(
+      elements.map((node, index) => [node, elements[index + 1] ?? null])
+    );
+
     for (const node of nodes) {
       if (node.type === 'text') {
         if (node.value.trim() === '') continue;
@@ -583,6 +837,23 @@ class OoxmlWriter {
       if (!BLOCK_TAGS.has(node.tag)) {
         pending.push(node);
         continue;
+      }
+      /*
+       * A caption the editor wrote, which is a paragraph rather than a `<caption>`.
+       *
+       * HTML says a caption lives inside its table; ProseMirror's table model says a table's
+       * children are rows, and putting anything else in there corrupts the map every table command
+       * works from. So the editor marks a paragraph instead, and this is where the two views meet:
+       * the paragraph immediately before a table is that table's caption and is drawn by `#table`,
+       * and the same paragraph with no table after it is just a paragraph.
+       */
+      if (node.tag === 'p' && node.attrs['data-table-caption'] !== undefined) {
+        const next = nextElement.get(node);
+        if (next && next.tag === 'table') {
+          flush();
+          this.pendingTableCaption = node.children;
+          continue;
+        }
       }
       flush();
       this.#block(node, ctx);
@@ -608,8 +879,43 @@ class OoxmlWriter {
       return;
     }
 
+    /*
+     * A callout, which the editor writes as `<aside data-callout="warning">`.
+     *
+     * Checked before the switch rather than as a case of it, and that is not style: `aside` already
+     * appears in the fallthrough group at the bottom, so a second case for it would shadow that one
+     * — and an `<aside>` with no attribute would fall out of the switch having drawn nothing at
+     * all. Which is exactly what it did, until the suite said so.
+     *
+     * `aside` because it is the one block element in the sanitiser's allow-list that means this and
+     * is not already spoken for, and because without the attribute it stays the ordinary block it
+     * has always been.
+     */
+    if (tag === 'aside' && attrs['data-callout'] !== undefined) {
+      this.#callout(node, ctx);
+      return;
+    }
+
     switch (tag) {
       case 'hr':
+        /*
+         * A rule, or a page break — the editor writes both as `<hr>` and tells them apart with one
+         * attribute.
+         *
+         * The same element because that is what it already is in the document model: a thing on
+         * its own line that separates what is above from what is below. A page break is the
+         * strongest version of that, and giving it its own tag would mean teaching the sanitiser,
+         * the HTML report and the paste path about a second one.
+         *
+         * An empty paragraph carrying the break rather than a break inside the preceding
+         * paragraph: Word treats the break as belonging to the run it sits in, so putting it at the
+         * end of somebody's sentence makes the break part of that sentence — delete the last word
+         * and the page break can go with it.
+         */
+        if (attrs['data-page-break'] !== undefined) {
+          this.#paragraph('<w:r><w:br w:type="page"/></w:r>');
+          return;
+        }
         this.#paragraph('', { border: true });
         return;
 
@@ -631,7 +937,7 @@ class OoxmlWriter {
       }
 
       case 'pre':
-        this.#codeBlock(children, ctx);
+        this.#codeBlock(children, ctx, attrs);
         return;
 
       case 'figcaption':
@@ -752,13 +1058,154 @@ class OoxmlWriter {
       captionStyle: this.captionStyle,
       figureNumbering: this.figureNumbering,
       figureLabel: this.figureLabel,
+      tableNumbering: this.tableNumbering,
+      tableLabel: this.tableLabel,
       codeTheme: this.codeTheme,
+      codeHighlight: this.codeHighlight,
+      codeLineNumbers: this.codeLineNumbers,
       availableStyles: this.availableStyles,
       // Nested writers draw tables and code panes too, and a cell's writer that fell back to
       // the default would size them for a different page than its parent.
       usableTwips: this.usableTwips,
       media: this.media,
     };
+  }
+
+  /**
+   * What the gutter prints for a line that did not come out of the tool.
+   *
+   * The elision notice the print policy writes ("… 146 lines not printed") is a line in the pane
+   * but not a line of evidence, so it gets this instead of a number. Without it the notice would
+   * take the next number in the sequence and the count would be one out from there on.
+   */
+  static #ELISION = '…';
+
+  /**
+   * Which real line each printed row is, from `data-line-numbers`.
+   *
+   * The attribute is a comma list of numbers and ranges, one entry per printed row in order, with
+   * `0` for a row the print policy wrote rather than the tool: `1-40,0,187,0,203-205`. That is the
+   * whole of the contract, and it exists because a pane is not always the output — a step set to
+   * print its first forty lines, with a marked line at 187 carried in anyway, is four ranges and
+   * two notices, and no other encoding says that in forty characters.
+   *
+   * Returns null when the attribute is absent, malformed, or does not describe exactly this many
+   * rows. Null means "number them 1, 2, 3", which is right for an editor code block and is the
+   * only safe answer for a mismatch: numbering evidence wrongly is worse than not numbering it.
+   *
+   * @param {string} value
+   * @param {number} rows
+   * @returns {number[]|null}
+   */
+  static #lineNumbers(value, rows) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+
+    const out = [];
+    for (const part of raw.split(',')) {
+      const range = /^(\d+)-(\d+)$/.exec(part.trim());
+      if (range) {
+        const from = Number(range[1]);
+        const to = Number(range[2]);
+        if (to < from || to - from > 100_000) return null;
+        for (let n = from; n <= to; n += 1) out.push(n);
+        continue;
+      }
+      if (!/^\d+$/.test(part.trim())) return null;
+      out.push(Number(part.trim()));
+    }
+    return out.length === rows ? out : null;
+  }
+
+  /** The marked lines, as real line numbers: `data-mark-lines="187,203"`. */
+  static #markedLines(value) {
+    const out = new Set();
+    for (const part of String(value ?? '').split(',')) {
+      const n = Number(part.trim());
+      if (Number.isInteger(n) && n > 0) out.add(n);
+    }
+    return out;
+  }
+
+  /**
+   * The runs for one line of a code pane.
+   *
+   * A marked line is drawn whole in one colour rather than tokenised: the accent is saying "this
+   * is the line somebody pointed at", and a line that is half accent and half syntax colours says
+   * it much less clearly. Everything else is tokenised when highlighting is on, and is one run in
+   * `theme.text` when it is off or the language was not recognised — which is the pane exactly as
+   * it has always been.
+   */
+  /**
+   * A tab, as the spaces a terminal would have shown.
+   *
+   * Counted rather than kept, because a tab character in a fixed-layout table cell lands on
+   * whatever tab stops the document happens to define, which is never the eight columns the tool
+   * that wrote it assumed. It also cannot be measured, and everything below depends on knowing how
+   * wide a line is.
+   */
+  static #expandTabs(line, stop = 8) {
+    if (!line.includes('\t')) return line;
+    let out = '';
+    for (const character of line) {
+      out += character === '\t' ? ' '.repeat(stop - (out.length % stop)) : character;
+    }
+    return out;
+  }
+
+  /** A line's tokens, coloured or not. One token for the whole line when there is no language. */
+  #codeLineTokens(text, language) {
+    if (!this.codeHighlight || !language) return [{ text, kind: 'plain' }];
+    return highlight(text, language);
+  }
+
+  /**
+   * Splits one line's tokens into the display rows it will occupy.
+   *
+   * Tokens rather than text, so a wrapped line keeps its colours and — the part that matters —
+   * the highlighter never sees a fragment. Several of its rules are anchored to the start of a
+   * line: colouring the chunks separately would read `POST` in the middle of a wrapped URL as a
+   * request method and paint it like one.
+   *
+   * A hard break at the column, the way a terminal wraps, rather than at the last space. A pane
+   * is evidence: re-flowing somebody's output at word boundaries rewrites the shape of the thing
+   * they are showing, and the one place a break must never fall is inside a value nobody can see
+   * the end of.
+   */
+  static #wrapTokens(tokens, columns) {
+    const rows = [];
+    let row = [];
+    let used = 0;
+    for (const token of tokens) {
+      let rest = token.text;
+      while (rest.length > 0) {
+        if (used >= columns) {
+          rows.push(row);
+          row = [];
+          used = 0;
+        }
+        const take = rest.slice(0, columns - used);
+        row.push({ text: take, kind: token.kind });
+        used += take.length;
+        rest = rest.slice(take.length);
+      }
+    }
+    rows.push(row);
+    return rows;
+  }
+
+  /** One display row's runs. */
+  #codeRowRuns(tokens, { theme, marked }) {
+    const base = { mono: true, size: 18 };
+    if (marked) {
+      const text = tokens.map((token) => token.text).join('');
+      return this.#textRun(text, { ...base, color: theme.accent, bold: true }, true);
+    }
+    return tokens
+      .map((token) =>
+        this.#textRun(token.text, { ...base, color: theme.tokens?.[token.kind] ?? theme.text }, true)
+      )
+      .join('');
   }
 
   /**
@@ -769,13 +1216,23 @@ class OoxmlWriter {
    * paragraph puts the text flush against the coloured edge, which never looks
    * like a console. The `template` theme instead defers to the document's own
    * `CodeBlock` style so a house style wins.
+   *
+   * Three things can be asked of the pane through attributes on the `<pre>`, all optional and all
+   * ignored unless the block is plain text (a hand-written `<pre>` with markup inside it takes the
+   * original single-colour path, because nothing here could colour it without first deciding what
+   * somebody's `<span>` meant):
+   *
+   *   `data-language`     what to colour it as — see `code-highlight.js`, which also sniffs
+   *   `data-line-numbers` which real line each row is, so a pane that skips can say so
+   *   `data-mark-lines`   the lines somebody marked, which the pane picks out in the accent
    */
-  #codeBlock(children, ctx) {
+  #codeBlock(children, ctx, attrs = {}) {
     // TipTap wraps code-block content in <code>; unwrap so the text is direct.
-    const inner =
+    const codeEl =
       children.length === 1 && children[0].type === 'element' && children[0].tag === 'code'
-        ? children[0].children
-        : children;
+        ? children[0]
+        : null;
+    const inner = codeEl ? codeEl.children : children;
 
     const templateStyle = this.codeTheme === 'template' ? this.#style('CodeBlock') : null;
     if (templateStyle) {
@@ -787,17 +1244,144 @@ class OoxmlWriter {
     }
 
     const theme = CODE_THEMES[this.codeTheme] ?? CODE_THEMES.terminal;
-    // `code: false` so the inline-code shading does not fight the pane colour.
-    const runs = this.#inline(inner, { mono: true, color: theme.text, size: 18 }, true);
-
     const width = Math.max(1200, this.usableTwips - (ctx.indent || 0));
-    const edge = (side) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="${theme.border}"/>`;
+
+    /*
+     * Plain text, or markup?
+     *
+     * Only the first can be coloured or counted, and only the first is what anything in this
+     * codebase actually produces — TipTap's code block holds text, and the output pane is
+     * assembled from escaped text in `report.service.js`. The second is a `<pre>` somebody pasted,
+     * and it keeps the behaviour it has always had.
+     */
+    const plain = inner.every((node) => node.type === 'text')
+      ? inner.map((node) => node.value).join('')
+      : null;
+
+    let runs;
+    let gutter = null;
+
+    if (plain === null) {
+      // `code: false` so the inline-code shading does not fight the pane colour.
+      runs = this.#inline(inner, { mono: true, color: theme.text, size: 18 }, true);
+    } else {
+      /*
+       * One trailing newline is dropped, the way `<pre>` has always treated a leading one: it is
+       * how the text was laid out, not a line of it. Left in, it becomes an empty final row — and
+       * with a gutter, an empty final row that has been given a number, which reads as a bug in
+       * the pane rather than as the blank line it is.
+       */
+      const lines = plain.replace(/\n$/, '').split('\n');
+      const language = this.codeHighlight
+        ? detectLanguage(plain, codeEl?.attrs?.class || `language-${attrs['data-language'] ?? ''}`)
+        : '';
+      const numbers = OoxmlWriter.#lineNumbers(attrs['data-line-numbers'], lines.length);
+      const marked = OoxmlWriter.#markedLines(attrs['data-mark-lines']);
+
+      /*
+       * A pane that skips numbers its own lines whatever the setting says.
+       *
+       * The setting is a preference about how panes look; this is not. A pane showing lines 1-40
+       * and then line 187 with nothing between them is a claim about the evidence, and without the
+       * numbers beside it the claim is that those forty-one lines ran consecutively. The elision
+       * notice says some were cut; only the numbers say which.
+       */
+      const skips = Boolean(numbers) && numbers.some((n, i) => i > 0 && n !== 0 && n !== numbers[i - 1] + 1);
+      const numbered = this.codeLineNumbers || skips;
+
+      /*
+       * How many characters fit across the code cell.
+       *
+       * The gutter is as wide as its widest number, so the code column is only known once that is,
+       * and the number below is computed from it rather than guessed at — see `CODE_CHAR_TWIPS`.
+       */
+      const gutterWidth = numbered
+        ? Math.max(
+            560,
+            String(
+              numbers ? numbers.reduce((a, b) => (b > a ? b : a), lines.length) : lines.length
+            ).length *
+              100 +
+              320
+          )
+        : 0;
+      const columns = Math.max(
+        MIN_CODE_COLUMNS,
+        Math.floor((width - gutterWidth - 320) / CODE_CHAR_TWIPS)
+      );
+
+      /*
+       * Every line as the rows it will actually occupy, and the number that belongs beside each.
+       *
+       * This is the whole of 172. The cells line up only because the gutter and the code carry the
+       * same number of `<w:br/>`-separated rows, and a line wider than the column used to gain a
+       * row in the code cell that the gutter — which is `noWrap` — never gained. From the first
+       * long line down, every number was beside the wrong line. Wrapping here rather than leaving
+       * it to Word is the only way to know where the breaks are, and therefore the only way to put
+       * a blank in the gutter opposite each one.
+       *
+       * Blank rather than a continuation mark, deliberately: a real empty line in the output still
+       * carries its own number, so "numbered" and "blank" already distinguish the two without
+       * putting a glyph in the gutter that the reader has to be taught.
+       */
+      const rows = [];
+      for (const [index, line] of lines.entries()) {
+        const number = numbers ? numbers[index] : index + 1;
+        const isMarked = marked.has(number);
+        const tokens = this.#codeLineTokens(OoxmlWriter.#expandTabs(line), language);
+        const wrapped = OoxmlWriter.#wrapTokens(tokens, columns);
+        for (const [part, rowTokens] of wrapped.entries()) {
+          rows.push({ tokens: rowTokens, marked: isMarked, number, continuation: part > 0 });
+        }
+      }
+
+      runs = rows
+        .map((row) => this.#codeRowRuns(row.tokens, { theme, marked: row.marked }))
+        .join('<w:r><w:br/></w:r>');
+
+      if (numbered) {
+        const label = (row) => {
+          if (row.continuation) return '';
+          return row.number === 0 ? OoxmlWriter.#ELISION : String(row.number);
+        };
+        gutter = {
+          runs: rows
+            .map((row) =>
+              this.#textRun(
+                label(row),
+                {
+                  mono: true,
+                  size: 18,
+                  color: row.marked ? theme.accent : (theme.gutter ?? theme.border),
+                },
+                false
+              )
+            )
+            .join('<w:r><w:br/></w:r>'),
+          /*
+           * Wide enough for the longest number it will print, and no wider.
+           *
+           * The largest *number*, not the row count — a pane showing forty rows of a four-hundred
+           * line sweep prints 187 in a column sized for 40, and the number wraps. Worked out
+           * before the wrapping above, which needs to know what is left for the code.
+           */
+          width: gutterWidth,
+        };
+      }
+    }
+
+    const edge = (side, color = theme.border) =>
+      `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="${color}"/>`;
 
     const tblPr =
       '<w:tblPr>' +
       `<w:tblW w:w="${width}" w:type="dxa"/>` +
       (ctx.indent ? `<w:tblInd w:w="${ctx.indent}" w:type="dxa"/>` : '') +
-      `<w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(edge).join('')}</w:tblBorders>` +
+      '<w:tblBorders>' +
+      ['top', 'left', 'bottom', 'right', 'insideH'].map((side) => edge(side)).join('') +
+      /* The rule between the gutter and the code, which is the only inside edge a pane has. */
+      edge('insideV', theme.gutterRule ?? theme.border) +
+      '</w:tblBorders>' +
       `<w:shd w:val="clear" w:color="auto" w:fill="${theme.fill}"/>` +
       '<w:tblLayout w:type="fixed"/>' +
       // Interior padding — the difference between a code pane and shaded text.
@@ -807,25 +1391,45 @@ class OoxmlWriter {
       '</w:tblCellMar>' +
       '</w:tblPr>';
 
-    const paragraph =
+    /*
+     * Both cells share this paragraph shape, and they have to: the rows only line up because the
+     * gutter and the code are the same font at the same size on the same single-spaced line, each
+     * broken by `<w:br/>` at the same points. Change the spacing in one and the numbers walk away
+     * from the lines they are counting.
+     */
+    const paragraph = (body, align) =>
       '<w:p><w:pPr>' +
+      (align ? `<w:jc w:val="${align}"/>` : '') +
       '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' +
       `<w:rPr><w:rFonts w:ascii="${this.monoFont}" w:hAnsi="${this.monoFont}" w:cs="${this.monoFont}"/>` +
       `<w:color w:val="${theme.text}"/><w:sz w:val="18"/></w:rPr>` +
       '</w:pPr>' +
-      runs +
+      body +
       '</w:p>';
+
+    const cell = (cellWidth, body, { align, noWrap } = {}) =>
+      '<w:tc><w:tcPr>' +
+      `<w:tcW w:w="${cellWidth}" w:type="dxa"/>` +
+      `<w:shd w:val="clear" w:color="auto" w:fill="${theme.fill}"/>` +
+      (noWrap ? '<w:noWrap/>' : '') +
+      '<w:vAlign w:val="top"/>' +
+      '</w:tcPr>' +
+      paragraph(body, align) +
+      '</w:tc>';
+
+    const codeWidth = gutter ? width - gutter.width : width;
+    const grid = gutter
+      ? `<w:tblGrid><w:gridCol w:w="${gutter.width}"/><w:gridCol w:w="${codeWidth}"/></w:tblGrid>`
+      : `<w:tblGrid><w:gridCol w:w="${width}"/></w:tblGrid>`;
 
     this.blocks.push(
       '<w:tbl>' +
         tblPr +
-        `<w:tblGrid><w:gridCol w:w="${width}"/></w:tblGrid>` +
-        '<w:tr><w:trPr><w:cantSplit/></w:trPr><w:tc><w:tcPr>' +
-        `<w:tcW w:w="${width}" w:type="dxa"/>` +
-        `<w:shd w:val="clear" w:color="auto" w:fill="${theme.fill}"/>` +
-        '</w:tcPr>' +
-        paragraph +
-        '</w:tc></w:tr>' +
+        grid +
+        '<w:tr><w:trPr><w:cantSplit/></w:trPr>' +
+        (gutter ? cell(gutter.width, gutter.runs, { align: 'right', noWrap: true }) : '') +
+        cell(codeWidth, runs) +
+        '</w:tr>' +
         '</w:tbl>'
     );
     // Word requires a paragraph after a table.
@@ -884,7 +1488,136 @@ class OoxmlWriter {
     }
   }
 
+  /**
+   * The caption line over a table: "Table 3", or "Table 3 — Hosts in scope".
+   *
+   * **Above** the table, where a figure's goes below. That is the convention every style guide
+   * agrees on, and it has a reason: a reader meets a figure and then asks what it was, and meets a
+   * table and needs to know what the columns are before reading them.
+   *
+   * Numbered off `SEQ Table`, which is Word's own counter and a different one from `SEQ Figure` —
+   * so Table 3 can sit beside Figure 7 and neither is wrong, and a table of tables built by Word
+   * finds them. Like a figure's, the number here is the cached one; the field renumbers itself if
+   * somebody edits the document afterwards. See `figure-fields.js`.
+   *
+   * `keepNext`, without which the caption can be the last line on a page and the table it names
+   * the first thing on the next one.
+   */
+  #tableCaption(children) {
+    const style = this.#style(this.captionStyle);
+    const marks = style ? {} : { italic: true, size: 17, color: '6B7280' };
+    const text = children ? this.#inline(children, marks) : '';
+
+    let prefix = '';
+    if (this.tableNumbering && this.parts) {
+      prefix = captionPrefix({
+        ...this.parts.tableBookmark(),
+        label: this.tableLabel,
+        sequence: 'Table',
+        separator: text.trim() ? ' — ' : '',
+        rPr: style ? '' : this.#runProps(marks),
+      });
+    }
+    if (!prefix && !text.trim()) return;
+
+    this.#paragraph(prefix + text, { style: style ?? undefined, keepNext: true });
+  }
+
+  /**
+   * A callout box: one cell, shaded, with a coloured bar down its left edge.
+   *
+   * A table rather than a shaded paragraph, for the reason `#codeBlock` is one: only a cell can
+   * carry interior margins, and text flush against a coloured edge does not read as a box. The
+   * left border is heavier than the others and in the accent colour, which is what makes it
+   * scannable when somebody is flicking through looking for the warnings.
+   *
+   * The label is a run rather than a separate paragraph, so a one-line callout is one line. It is
+   * bold and coloured and the body follows it on the same line, which is how every style guide
+   * that has an opinion sets these.
+   *
+   * `cantSplit` so a three-line warning is never broken across a page — the half a reader sees
+   * first would be the half without the word "Warning" in it.
+   */
+  #callout(node, ctx) {
+    const kind = String(node.attrs['data-callout'] ?? 'note').toLowerCase();
+    const style = CALLOUTS[kind] ?? CALLOUTS.note;
+    const width = Math.max(1200, this.usableTwips - (ctx.indent || 0));
+
+    /*
+     * Rendered through a child writer, so a callout can hold what a callout holds: a list, a code
+     * pane, a second paragraph. Handing the children to `#inline` instead would flatten all of
+     * that into one run, which is the version somebody notices a week later.
+     */
+    const inner = new OoxmlWriter(this.#childOptions());
+    inner.render(node.children, { ...ctx, indent: 0 });
+    if (!inner.blocks.length) return;
+
+    /*
+     * The label goes on the first paragraph rather than above it, and is injected rather than
+     * composed, because the first block might be a list item or a table — in which case there is
+     * no sentence to prefix and the label takes a line of its own.
+     */
+    const marks = { bold: true, color: style.text };
+    const label = this.#textRun(`${style.label}  `, marks);
+    const first = inner.blocks[0];
+    if (first.startsWith('<w:p>') && !first.includes('<w:numPr')) {
+      inner.blocks[0] = first.replace(
+        first.startsWith('<w:p><w:pPr>') ? /^(<w:p><w:pPr>.*?<\/w:pPr>)/ : /^(<w:p>)/,
+        (match) => `${match}${label}`
+      );
+    } else {
+      inner.blocks.unshift(`<w:p>${label}</w:p>`);
+    }
+
+    const edge = (side, sz, color) =>
+      `<w:${side} w:val="single" w:sz="${sz}" w:space="0" w:color="${color}"/>`;
+
+    this.blocks.push(
+      '<w:tbl><w:tblPr>' +
+        `<w:tblW w:w="${width}" w:type="dxa"/>` +
+        (ctx.indent ? `<w:tblInd w:w="${ctx.indent}" w:type="dxa"/>` : '') +
+        '<w:tblBorders>' +
+        /* The left edge is the callout. The rest is a hairline so the box has an outline at all. */
+        edge('left', '24', style.border) +
+        ['top', 'bottom', 'right'].map((side) => edge(side, '2', style.border)).join('') +
+        '</w:tblBorders>' +
+        `<w:shd w:val="clear" w:color="auto" w:fill="${style.fill}"/>` +
+        '<w:tblLayout w:type="fixed"/>' +
+        '<w:tblCellMar>' +
+        '<w:top w:w="120" w:type="dxa"/><w:left w:w="180" w:type="dxa"/>' +
+        '<w:bottom w:w="120" w:type="dxa"/><w:right w:w="180" w:type="dxa"/>' +
+        '</w:tblCellMar>' +
+        '</w:tblPr>' +
+        `<w:tblGrid><w:gridCol w:w="${width}"/></w:tblGrid>` +
+        '<w:tr><w:trPr><w:cantSplit/></w:trPr><w:tc><w:tcPr>' +
+        `<w:tcW w:w="${width}" w:type="dxa"/>` +
+        `<w:shd w:val="clear" w:color="auto" w:fill="${style.fill}"/>` +
+        '</w:tcPr>' +
+        inner.blocks.join('') +
+        '</w:tc></w:tr></w:tbl>'
+    );
+    // Word requires a paragraph after a table.
+    this.blocks.push('<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>');
+  }
+
   #table(node, ctx) {
+    /*
+     * A `<caption>`, or the paragraph the editor marked as one, or nothing.
+     *
+     * Taken first thing and taken whatever happens next, so that a table this method goes on to
+     * decline — no rows, no columns — does not leave its caption lying around for the next table
+     * in the field to pick up and print under the wrong name.
+     *
+     * Deliberately not the figure rule. Every picture is a numbered figure whether anybody
+     * captioned it or not, because a report has fifty screenshots and almost none of them will
+     * have a caption — but a write-up is full of small tables that are part of a sentence, a
+     * two-row comparison inside a paragraph, and numbering those would produce "Table 14" for
+     * something no reader will ever look up. A table worth pointing at is one somebody named.
+     */
+    const element = node.children?.find((n) => n.type === 'element' && n.tag === 'caption');
+    const caption = element ? element.children : this.pendingTableCaption;
+    this.pendingTableCaption = null;
+
     const rows = [];
     const collectRows = (n) => {
       for (const child of n.children ?? []) {
@@ -905,8 +1638,26 @@ class OoxmlWriter {
     }, 0);
     if (!columnCount) return;
 
+    /* Drawn now that there is definitely a table under it. */
+    if (caption) this.#tableCaption(caption);
+
     // The template's own text column, not a fixed 6.5 inches.
     const totalWidth = this.usableTwips;
+    /*
+     * The widths the author dragged the columns to, scaled to this document's text column.
+     *
+     * The editor has column resizing on and ProseMirror records the result as `colwidth` on each
+     * cell, one number per column the cell spans. All of it used to be discarded here in favour of
+     * an equal split, so "Host | Port | Service | Notes" printed as four equal columns and the
+     * work somebody did to make the table readable was thrown away at the boundary.
+     *
+     * Scaled rather than converted, deliberately. `colwidth` is in the editor's CSS pixels, and
+     * the editor is whatever width the browser window was — a number that means nothing about an
+     * A4 page. What survives the trip is the *ratio* between the columns, which is the thing the
+     * author was actually expressing.
+     */
+    const widths = columnWidths(rows, columnCount, totalWidth);
+    /** The equal split, still, for everything that does not know its own width. */
     const colWidth = Math.floor(totalWidth / columnCount);
 
     const border = (side) =>
@@ -920,7 +1671,7 @@ class OoxmlWriter {
       '</w:tblBorders>' +
       '<w:tblLayout w:type="fixed"/>' +
       '</w:tblPr>';
-    const tblGrid = `<w:tblGrid>${Array.from({ length: columnCount }, () => `<w:gridCol w:w="${colWidth}"/>`).join('')}</w:tblGrid>`;
+    const tblGrid = `<w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>`;
 
     const rowXml = rows
       .map((row) => {
@@ -928,15 +1679,39 @@ class OoxmlWriter {
           (c) => c.type === 'element' && (c.tag === 'td' || c.tag === 'th')
         );
         const isHeaderRow = cells.length > 0 && cells.every((c) => c.tag === 'th');
+        /* Which column each cell starts at, so a spanning cell can add up the right ones. */
+        let column = 0;
         const cellXml = cells
           .map((cell) => {
             const span = Math.max(1, Number(cell.attrs.colspan) || 1);
+            const at = column;
+            column += span;
+            /* A cell is as wide as the columns it covers — not as wide as one of them times n,
+             * which is the same number only while every column is the same width. */
+            const cellWidth = widths
+              .slice(at, at + span)
+              .reduce((sum, w) => sum + w, 0) || colWidth * span;
             const rowSpan = Number(cell.attrs.rowspan) || 1;
             const cellStyle = parseStyle(cell.attrs.style);
             const fill =
               normaliseColor(cellStyle['background-color']) ?? (cell.tag === 'th' ? 'F2F2F2' : null);
 
-            const inner = new OoxmlWriter(this.#childOptions());
+            /*
+             * A cell's writer measures against the cell, not against the page.
+             *
+             * Everything nested inherits this: an image, a code pane, a table inside a table. It
+             * used to inherit the parent's full text column, so a screenshot pasted into one half
+             * of a two-column table was laid out at the width of the whole page and spilled out of
+             * the cell it was in — which is why "put them side by side" was not something anybody
+             * could do with the table they already had.
+             *
+             * Word's default cell margin is 108 twips each side; taking both off keeps the picture
+             * inside the rule rather than touching it.
+             */
+            const inner = new OoxmlWriter({
+              ...this.#childOptions(),
+              usableTwips: Math.max(720, cellWidth - 216),
+            });
             if (this.#hasBlockChild(cell.children)) {
               inner.render(cell.children, { ilvl: 0, indent: 0 });
             } else {
@@ -948,7 +1723,7 @@ class OoxmlWriter {
 
             const tcPr =
               '<w:tcPr>' +
-              `<w:tcW w:w="${colWidth * span}" w:type="dxa"/>` +
+              `<w:tcW w:w="${cellWidth}" w:type="dxa"/>` +
               (span > 1 ? `<w:gridSpan w:val="${span}"/>` : '') +
               (rowSpan > 1 ? '<w:vMerge w:val="restart"/>' : '') +
               (fill ? `<w:shd w:val="clear" w:color="auto" w:fill="${fill}"/>` : '') +

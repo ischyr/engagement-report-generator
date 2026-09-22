@@ -95,9 +95,61 @@ export function ContentChanges({ changes }) {
         {change.fields?.length ? (
           <span className="text-[0.625rem] text-fg-muted">{change.fields.join(', ')}</span>
         ) : null}
+        {/*
+          And what the words became.
+
+          Only the side-by-side comparison asks for these — the list of renders says "the
+          remediation changed", which is what a list is for. This is the view somebody opened
+          because they wanted the rest of that sentence.
+        */}
+        {change.diffs ? (
+          <ul className="mt-1.5 flex w-full flex-col gap-2">
+            {Object.entries(change.diffs).map(([field, pieces]) => (
+              <li key={field}>
+                <p className="text-[0.625rem] uppercase tracking-wide text-fg-subtle">{field}</p>
+                <WordDiff pieces={pieces} />
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </li>
     );
   });
+}
+
+/**
+ * One field, before and after, in a single passage.
+ *
+ * Inline rather than two columns. The edit to a write-up is almost always a few words inside a
+ * paragraph, and two columns of near-identical text asks the reader to do the comparison the
+ * computer already did — the whole point is to show *only* the difference, in place.
+ *
+ * Removed text is struck through rather than hidden, because "what did it used to say" is half of
+ * what somebody opened this to find out.
+ */
+function WordDiff({ pieces }) {
+  return (
+    <p className="mt-0.5 whitespace-pre-wrap rounded-md bg-black/20 px-2 py-1.5 text-xs leading-relaxed text-fg-muted">
+      {pieces.map((piece, index) =>
+        piece.op === 'same' ? (
+          /* eslint-disable-next-line react/no-array-index-key -- the pieces have no id and never reorder. */
+          <span key={index}>{piece.text}</span>
+        ) : piece.op === 'added' ? (
+          <ins
+            key={index}
+            className="rounded bg-low/20 px-0.5 text-low no-underline"
+            title="added"
+          >
+            {piece.text}
+          </ins>
+        ) : (
+          <del key={index} className="rounded bg-crit/15 px-0.5 text-crit" title="removed">
+            {piece.text}
+          </del>
+        )
+      )}
+    </p>
+  );
 }
 
 export default function RenderHistory({ audit }) {
@@ -306,7 +358,25 @@ export default function RenderHistory({ audit }) {
                 ) : null}
                 {row.counts?.images ? <span>{row.counts.images} images</span> : null}
                 <span>{bytes(row.size)}</span>
-                {row.ms ? <span>{(row.ms / 1000).toFixed(1)}s</span> : null}
+                {/*
+                  The total, and on hover where it went.
+                  A breakdown in the row would be four numbers nobody reads on a render that took
+                  two seconds; a tooltip is free until the day one takes ninety and somebody wants
+                  to know which ninety.
+                */}
+                {row.ms ? (
+                  <span
+                    title={
+                      row.stages
+                        ? Object.entries(row.stages)
+                            .map(([label, ms]) => `${label}: ${(ms / 1000).toFixed(1)}s`)
+                            .join('\n')
+                        : undefined
+                    }
+                  >
+                    {(row.ms / 1000).toFixed(1)}s
+                  </span>
+                ) : null}
                 <span className="font-mono">{row.build}</span>
               </p>
 

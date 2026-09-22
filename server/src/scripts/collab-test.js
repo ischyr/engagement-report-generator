@@ -5308,6 +5308,26 @@ async function main() {
         noteCappedStep?.notes?.[0]?.snippet === 'zz-b.example [401]',
         JSON.stringify(noteCappedStep?.notes)
       );
+      /*
+       * And the pane itself carries the line, not only the note list under it.
+       *
+       * The cap is one line; the marked line is the second. Before this, the document printed line
+       * 1, said "1 more line not printed", and then listed a note about a line the reader could not
+       * see — which is the cap deleting the one line somebody had said mattered.
+       */
+      check(
+        'the marked line survives the cap and reaches the pane',
+        (noteCappedStep?.outputRows ?? []).some(
+          (row) => row.n === 2 && row.text === 'zz-b.example [401]'
+        ),
+        JSON.stringify(noteCappedStep?.outputRows)
+      );
+      check(
+        'carrying its real line number, so the gutter cannot lie about it',
+        JSON.stringify((noteCappedStep?.outputRows ?? []).map((row) => row.n)) === '[1,2]' &&
+          noteCappedStep?.markedLines?.includes(2),
+        JSON.stringify({ rows: noteCappedStep?.outputRows, marked: noteCappedStep?.markedLines })
+      );
       const unmarked = await call(
         alice,
         'DELETE',
@@ -6857,6 +6877,198 @@ async function main() {
         JSON.stringify(cleared.body?.assignedTo)
       );
 
+      /* ------------------------------------------------ the closeout call -- */
+      /*
+       * The other end of the job. A kickoff is a structured record on the proposal; this was the
+       * only part of an engagement's life with nowhere to go.
+       */
+      const beforeCall = await call(alice, 'GET', `/audits/${auditId}`);
+      check(
+        'an engagement starts with no closeout',
+        !beforeCall.body?.closeout?.at,
+        JSON.stringify(beforeCall.body?.closeout)
+      );
+
+      const recorded = await call(alice, 'PUT', `/audits/${auditId}/closeout`, {
+        heldOn: '2026-04-02',
+        attendeesTheirs: 'R. Whitfield (Head of Infrastructure)',
+        notes: 'Took them through the four Criticals.',
+        disputed: 'They dispute the severity on the SSRF.',
+        commitments: 'Rebuilding the auth service in Q3.',
+        retestOn: '2026-07-01',
+      });
+      check(
+        'the call can be recorded',
+        recorded.status === 200 && recorded.body?.heldOn === '2026-04-02',
+        `${recorded.status} ${JSON.stringify(recorded.body?.heldOn)}`
+      );
+      check(
+        'and says who wrote it down, which is not who was on the call',
+        String(recorded.body?.by?._id ?? recorded.body?.by) === String(alice.user._id),
+        JSON.stringify(recorded.body?.by)
+      );
+      check(
+        'what they disputed is kept, because a retest starts from it',
+        recorded.body?.disputed?.includes('SSRF'),
+        recorded.body?.disputed
+      );
+
+      const inReport = await call(alice, 'GET', `/audits/${auditId}/report-data`);
+      const closeout = (inReport.body?.data ?? inReport.body ?? {}).closeout ?? {};
+      check('the report can print it', closeout.held === true, JSON.stringify(closeout.held));
+      check(
+        'with guards a template can switch on',
+        closeout.hasDisputed === true && closeout.hasCommitments === true && closeout.hasRetest === true,
+        JSON.stringify([closeout.hasDisputed, closeout.hasCommitments, closeout.hasRetest])
+      );
+
+      /*
+       * Recordable after approval, which is the point: the report went out before the call
+       * happened, so a guard that refused edits on an approved engagement would refuse this at
+       * exactly the moment somebody writes it.
+       */
+      const approvedState = await call(alice, 'PUT', `/audits/${auditId}/state`, { state: 'APPROVED' });
+      if (approvedState.status === 200) {
+        const afterApproval = await call(alice, 'PUT', `/audits/${auditId}/closeout`, {
+          notes: 'Took them through the four Criticals. They had already patched one.',
+        });
+        check(
+          'and can still be written once the engagement is approved',
+          afterApproval.status === 200,
+          `${afterApproval.status} ${JSON.stringify(afterApproval.body?.error)}`
+        );
+        await call(alice, 'PUT', `/audits/${auditId}/state`, { state: 'EDIT' });
+      }
+
+      /* Its own account: no `outsider` is in scope here, and an undefined one sends no auth at
+         all — which answers 401 and would have passed a check meant to prove 403. */
+      const closeoutOutsider = await makeUser('closeout-outsider', 'user');
+      const outsiderCall = await call(closeoutOutsider, 'PUT', `/audits/${auditId}/closeout`, {
+        notes: 'not mine to write',
+      });
+      check(
+        'somebody not on the engagement cannot record one',
+        outsiderCall.status === 403 || outsiderCall.status === 404,
+        `${outsiderCall.status}`
+      );
+
+      /* ------------------------------------------ the same check, per host -- */
+      /*
+       * One tick for twelve hosts is a coverage claim nobody can stand behind. The rule that makes
+       * this safe is that `done` keeps meaning what it meant — every listed host — so nothing that
+       * reads it has to learn that hosts exist.
+       */
+      await call(alice, 'PUT', `/audits/${auditId}`, {
+        scope: [
+          {
+            name: 'zz-hosts Internal',
+            hosts: [{ ip: '10.90.0.5' }, { ip: '10.90.0.6' }, { ip: '10.90.0.7' }],
+          },
+        ],
+      });
+      const perHost = await call(alice, 'POST', `/audits/${auditId}/test-checks`, {
+        title: 'zz-hosts authentication bypass',
+        category: 'Authentication',
+      });
+      const trackId = perHost.body._id;
+
+      const tracked = await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        hosts: ['10.90.0.5', '10.90.0.6'],
+      });
+      check(
+        'a check can be tracked against hosts from the scope',
+        tracked.status === 200 && (tracked.body?.hosts ?? []).length === 2,
+        JSON.stringify(tracked.body?.hosts)
+      );
+      check('and is not done until they are', tracked.body?.done === false, `${tracked.body?.done}`);
+
+      const offScope = await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        hosts: ['10.90.0.5', '10.99.99.99'],
+      });
+      check(
+        'a host nobody agreed to test cannot be claimed',
+        (offScope.body?.hosts ?? []).length === 1,
+        JSON.stringify(offScope.body?.hosts?.map((h) => h.key))
+      );
+
+      await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        hosts: ['10.90.0.5', '10.90.0.6'],
+      });
+      const firstHost = await call(
+        alice,
+        'PUT',
+        `/audits/${auditId}/test-checks/${trackId}/hosts/10.90.0.5`,
+        { done: true, result: 'no bypass' }
+      );
+      check(
+        'one host can be ticked on its own',
+        firstHost.status === 200 &&
+          (firstHost.body?.check?.hosts ?? []).find((h) => h.key === '10.90.0.5')?.done === true,
+        JSON.stringify(firstHost.body?.check?.hosts)
+      );
+      check(
+        'and one of two is not the whole check',
+        firstHost.body?.check?.done === false,
+        `${firstHost.body?.check?.done}`
+      );
+
+      const direct = await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        done: true,
+      });
+      check(
+        'the check itself cannot be ticked past its hosts',
+        direct.status === 400,
+        `${direct.status} ${JSON.stringify(direct.body?.error)}`
+      );
+
+      const lastHost = await call(
+        alice,
+        'PUT',
+        `/audits/${auditId}/test-checks/${trackId}/hosts/10.90.0.6`,
+        { done: true }
+      );
+      check(
+        'ticking the last host ticks the check',
+        lastHost.body?.check?.done === true,
+        `${lastHost.body?.check?.done}`
+      );
+      check(
+        'and records who finished it',
+        String(lastHost.body?.check?.doneBy?._id ?? lastHost.body?.check?.doneBy) ===
+          String(alice.user._id),
+        JSON.stringify(lastHost.body?.check?.doneBy)
+      );
+
+      const untick = await call(
+        alice,
+        'PUT',
+        `/audits/${auditId}/test-checks/${trackId}/hosts/10.90.0.5`,
+        { done: false }
+      );
+      check(
+        'unticking any host unticks the check',
+        untick.body?.check?.done === false,
+        `${untick.body?.check?.done}`
+      );
+
+      const stopped = await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        hosts: [],
+      });
+      check(
+        'per-host tracking can be turned off again',
+        (stopped.body?.hosts ?? []).length === 0,
+        JSON.stringify(stopped.body?.hosts)
+      );
+      const plain = await call(alice, 'PUT', `/audits/${auditId}/test-checks/${trackId}`, {
+        done: true,
+      });
+      check(
+        'and then it ticks like any other check',
+        plain.status === 200 && plain.body?.done === true,
+        `${plain.status} ${plain.body?.done}`
+      );
+      await call(alice, 'DELETE', `/audits/${auditId}/test-checks/${trackId}`);
+
       // A client report must not learn who internally was told to do what.
       const data = await call(alice, 'GET', `/audits/${auditId}/report-data`);
       check(
@@ -7558,6 +7770,31 @@ async function main() {
         JSON.stringify([again.body?.added, again.body?.updated])
       );
 
+      /*
+       * The same list again, with nothing changed about it.
+       *
+       * The counts are worked out from what was already stored rather than read off the write, and
+       * this is the case that decides it: these rows are written and nothing about them differs, so
+       * a count taken from `modifiedCount` would report two addresses touched as zero. Paste a list
+       * twice by accident and the page would say nothing happened.
+       */
+      const unchanged = await call(alice, 'POST', `/audits/${pid}/phishing`, {
+        targets: [
+          { email: 'dana@zz-phish.test', department: 'Group Finance' },
+          { email: 'new@zz-phish.test', name: 'Newly Added' },
+        ],
+      });
+      check(
+        'a list re-pasted with nothing changed still reports what it touched',
+        unchanged.body?.added === 0 && unchanged.body?.updated === 2,
+        JSON.stringify([unchanged.body?.added, unchanged.body?.updated])
+      );
+      check(
+        'and nothing was duplicated by writing them in one batch',
+        (unchanged.body?.targets ?? []).length === 4,
+        JSON.stringify((unchanged.body?.targets ?? []).map((t) => t.email))
+      );
+
       /* ---------------------------------------------------- importing results -- */
       const results = JSON.stringify({
         results: [
@@ -8058,6 +8295,26 @@ async function main() {
         'a blocked check is reported as blocked rather than as unticked',
         Boolean(flagged) && !/zz-blocked/.test(outstanding?.detail ?? ''),
         JSON.stringify([flagged?.message, outstanding?.detail])
+      );
+
+      /* ------------------------------ how close this is to the wall ----------- */
+      const size = await call(alice, 'GET', `/audits/${auditId}/size`);
+      check(
+        'an engagement can say how big it is',
+        size.status === 200 && size.body?.bytes > 0 && size.body?.limit === 16 * 1024 * 1024,
+        JSON.stringify({ bytes: size.body?.bytes, limit: size.body?.limit })
+      );
+      check(
+        'and names the parts it is made of, largest first',
+        Array.isArray(size.body?.parts) &&
+          size.body.parts.length > 0 &&
+          size.body.parts.every((p, i, all) => i === 0 || p.bytes <= all[i - 1].bytes),
+        JSON.stringify((size.body?.parts ?? []).map((p) => `${p.key}:${p.bytes}`))
+      );
+      check(
+        'a test engagement is nowhere near it, so no banner is drawn',
+        size.body?.level === 'fine',
+        `${size.body?.percent}% ${size.body?.level}`
       );
 
       const dash = await call(alice, 'GET', '/dashboard');
@@ -14286,8 +14543,44 @@ async function main() {
           numbering.body?.report?.public?.figureLabel === 'Screenshot',
         JSON.stringify(numbering.body?.report?.public?.figureLabel)
       );
+      /* The four that arrived with numbered tables and coloured panes, saved the same way. */
+      const presentation = await call(alice, 'PUT', '/settings', {
+        report: {
+          public: {
+            tableNumbering: false,
+            tableLabel: 'Tabel',
+            codeHighlight: false,
+            codeLineNumbers: true,
+          },
+        },
+      });
+      check(
+        'tables have their own numbering switch and their own word',
+        presentation.body?.report?.public?.tableNumbering === false &&
+          presentation.body?.report?.public?.tableLabel === 'Tabel',
+        JSON.stringify(presentation.body?.report?.public?.tableLabel)
+      );
+      check(
+        'and the code pane has its own two',
+        presentation.body?.report?.public?.codeHighlight === false &&
+          presentation.body?.report?.public?.codeLineNumbers === true,
+        JSON.stringify({
+          highlight: presentation.body?.report?.public?.codeHighlight,
+          numbers: presentation.body?.report?.public?.codeLineNumbers,
+        })
+      );
+
       await call(alice, 'PUT', '/settings', {
-        report: { public: { figureNumbering: true, figureLabel: 'Figure' } },
+        report: {
+          public: {
+            figureNumbering: true,
+            figureLabel: 'Figure',
+            tableNumbering: true,
+            tableLabel: 'Table',
+            codeHighlight: true,
+            codeLineNumbers: false,
+          },
+        },
       });
 
       await call(alice, 'DELETE', `/audits/${auditId}/findings/${figureId}`);

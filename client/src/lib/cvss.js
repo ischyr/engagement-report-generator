@@ -274,4 +274,28 @@ export function calculateCvss(vector) {
   };
 }
 
+/**
+ * The middle of each band, so a finding whose severity was argued sorts among its new peers
+ * rather than at the score its vector still computes.
+ *
+ * The server's `findingSeverity` in `services/cvss.js` is the definition; this is the copy the
+ * list needs to show the order the report will print, and `npm run test:numbering` asserts the
+ * two agree rather than trusting that they do. `calculateCvss` is already duplicated the same way.
+ */
+const BAND_MIDPOINT = { Critical: 9.5, High: 8, Medium: 5.5, Low: 2.5, None: 0 };
+
+/**
+ * What a finding sorts by: its vector's score, or the middle of the band it was moved into.
+ *
+ * An override equal to the computed severity is not an override — calling a High a High changes
+ * nothing — so it sorts on the vector like everything else.
+ */
+export function findingSortScore(finding) {
+  const cvss = calculateCvss(finding?.cvssv3);
+  const wanted = String(finding?.severityOverride ?? '').trim();
+  const overridden =
+    Boolean(wanted) && Object.hasOwn(BAND_MIDPOINT, wanted) && wanted !== cvss.baseSeverity;
+  return overridden ? BAND_MIDPOINT[wanted] ?? 0 : (cvss.baseScore ?? -1);
+}
+
 export default calculateCvss;

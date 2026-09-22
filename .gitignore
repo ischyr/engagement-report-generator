@@ -33,3 +33,7 @@ desktop.ini
 
 # Word lock files, created while a report is open
 ~$*.docx
+
+# Publishing: the export clone of the public repository, and the script that fills it.
+# Never part of what is published — see scratchpad/sync-export.mjs for why this folder exists.
+scratchpad/

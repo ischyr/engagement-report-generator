@@ -184,6 +184,24 @@ npm run test:images   # the rules that scale a screenshot on its way in
 npm run test:keys     # what counts as a save keystroke, and what does not
 npm run test:import   # reading findings back out of a spreadsheet
 npm run test:figures  # the surgery that captions and reorders evidence
+npm run test:report-craft # word diffs, prose checks, the page estimate, appendices
+npm run test:page-break  # starting every finding at the top of a page
+npm run test:numbering   # the order findings print in, and the numbers on them
+npm run test:opinion     # a second opinion on one finding, and the hours nobody logged
+npm run test:bulk-users  # deleting several accounts at once, and its guards
+npm run test:data-summary # what the Clients & data page counts, and who may know
+npm run test:notify-prefs # what reaches your bell, and that no sender can bypass it
+npm run test:mark-lines  # pointing at the one line of a pane that matters
+npm run test:figure-width # how wide a screenshot prints, and two of them side by side
+npm run test:evidence-api # a script putting a screenshot in the evidence bin
+npm run test:media-access # who can read another team’s evidence, renders and live feed
+npm run test:acceptance # a risk the client accepted, and a check done on nine of twelve hosts
+npm run test:report-blocks # page breaks, callouts, footnotes, finding references, charts
+npm run test:editor-blocks # and that the editor can actually write them
+npm run test:audit-size # how close an engagement is to the 16 MB one can hold
+npm run test:captions # numbered tables, and the lists of figures and tables at the front
+npm run test:code-pane # syntax colouring, line numbers, and the marked line that survives the cut
+npm run test:table-caption # the editor can name a table without breaking the table
 npm run test:assistant # what the optional assistant sends, and what it never does
 npm run test:chunks   # the first load stays small (needs npm run build first)
 npm run test:live-poll # the signed-in app still runs one timer, not four

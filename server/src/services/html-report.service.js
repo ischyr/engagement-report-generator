@@ -22,6 +22,8 @@ import { unprocessable } from '../utils/http-error.js';
 /** Elements a report body may contain. Anything else is unwrapped or dropped. */
 const ALLOWED_TAGS = new Set([
   'p', 'br', 'hr', 'div', 'span', 'section', 'article',
+  /* A callout box — "Warning: the fix below breaks single sign-on". See `#callout`. */
+  'aside',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'strong', 'b', 'em', 'i', 'u', 's', 'strike', 'del', 'ins', 'mark',
   'sub', 'sup', 'small', 'code', 'pre', 'kbd', 'samp', 'blockquote', 'q', 'cite',
@@ -56,6 +58,26 @@ const ALLOWED_ATTRS = {
    * everything else a paste might bring along is still dropped.
    */
   span: new Set(['data-figref']),
+  /*
+   * A table's caption, which is a paragraph rather than a `<caption>`.
+   *
+   * HTML says a caption lives inside its table; ProseMirror says a table's children are rows, and
+   * putting anything else in there corrupts the map every table command works from. So the editor
+   * marks the paragraph above instead. Dropped here, a captioned table in the HTML report would
+   * lose its name and its number while the .docx kept both — the same two-documents-disagree
+   * failure `data-video` is here to prevent.
+   */
+  p: new Set(['data-table-caption']),
+  /*
+   * Which kind of callout, and a page break that is not a rule.
+   *
+   * Both are the same argument as `data-table-caption` above: the attribute is the only thing
+   * distinguishing the block from the ordinary one, so dropping it here would silently turn every
+   * warning box into a paragraph and every page break into a horizontal line — in the HTML
+   * deliverable only, while the .docx kept both.
+   */
+  aside: new Set(['data-callout']),
+  hr: new Set(['data-page-break']),
   td: new Set(['colspan', 'rowspan']),
   th: new Set(['colspan', 'rowspan', 'scope']),
   col: new Set(['span']),

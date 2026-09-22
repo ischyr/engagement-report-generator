@@ -6,6 +6,7 @@ import { PresenceProvider } from './context/PresenceContext.jsx';
 import { CapabilitiesProvider } from './context/CapabilitiesContext.jsx';
 import { NotificationsProvider } from './context/NotificationsContext.jsx';
 import { BootScreen, LoadingBlock } from './components/ui/Feedback.jsx';
+import ErrorBoundary from './components/layout/ErrorBoundary.jsx';
 import { AppShell } from './components/layout/AppShell.jsx';
 
 /*
@@ -135,198 +136,209 @@ const PageFallback = <LoadingBlock className="py-16" />;
 
 export default function App() {
   return (
-    <Routes>
-      <Route
-        path="/login"
-        element={
-          <RedirectIfAuthenticated>
-            <LoginPage />
-          </RedirectIfAuthenticated>
-        }
-      />
-      <Route
-        path="/register"
-        element={
-          <RedirectIfAuthenticated>
-            <RegisterPage />
-          </RedirectIfAuthenticated>
-        }
-      />
+    /*
+     * The last resort, under the one in the shell.
+     *
+     * Everything signed in is caught inside `AppShell`, which keeps the navigation alive. What is
+     * left is the handful of routes that have no shell at all — the sign-in screens, a password
+     * link, and the two a *client* opens with no account. Those are the pages where a white screen
+     * is least explicable and most damaging, because the person looking at it has nobody to ask
+     * and no reason to believe it is anything but us.
+     */
+    <ErrorBoundary>
+      <Routes>
+        <Route
+          path="/login"
+          element={
+            <RedirectIfAuthenticated>
+              <LoginPage />
+            </RedirectIfAuthenticated>
+          }
+        />
+        <Route
+          path="/register"
+          element={
+            <RedirectIfAuthenticated>
+              <RegisterPage />
+            </RedirectIfAuthenticated>
+          }
+        />
 
-      {/*
-        Setting a password from a one-time link.
+        {/*
+          Setting a password from a one-time link.
 
-        Not wrapped in `RedirectIfAuthenticated`: somebody already signed in on this browser may
-        legitimately be opening a link for a *different* account — a colleague's laptop, a shared
-        machine — and bouncing them to the dashboard would make the link look broken.
-      */}
-      <Route
-        path="/set-password/:token"
-        element={
-          <Suspense fallback={PageFallback}>
-            <SetPasswordPage />
-          </Suspense>
-        }
-      />
+          Not wrapped in `RedirectIfAuthenticated`: somebody already signed in on this browser may
+          legitimately be opening a link for a *different* account — a colleague's laptop, a shared
+          machine — and bouncing them to the dashboard would make the link look broken.
+        */}
+        <Route
+          path="/set-password/:token"
+          element={
+            <Suspense fallback={PageFallback}>
+              <SetPasswordPage />
+            </Suspense>
+          }
+        />
 
-      {/*
-        The client's own view of their findings. Outside the shell and outside the gate: whoever
-        opens it has no account, and every other route in this app assumes one.
+        {/*
+          The client's own view of their findings. Outside the shell and outside the gate: whoever
+          opens it has no account, and every other route in this app assumes one.
 
-        Its own Suspense rather than the shell's, for the same reason — there is no shell here.
-      */}
-      <Route
-        path="/shared/:token"
-        element={
-          <Suspense fallback={PageFallback}>
-            <SharedFindingsPage />
-          </Suspense>
-        }
-      />
-      {/* Public, behind a token, and outside every guard: the person filling it in has no
-          account and never will. */}
-      <Route
-        path="/intake/:token"
-        element={
-          <Suspense fallback={PageFallback}>
-            <IntakePage />
-          </Suspense>
-        }
-      />
+          Its own Suspense rather than the shell's, for the same reason — there is no shell here.
+        */}
+        <Route
+          path="/shared/:token"
+          element={
+            <Suspense fallback={PageFallback}>
+              <SharedFindingsPage />
+            </Suspense>
+          }
+        />
+        {/* Public, behind a token, and outside every guard: the person filling it in has no
+            account and never will. */}
+        <Route
+          path="/intake/:token"
+          element={
+            <Suspense fallback={PageFallback}>
+              <IntakePage />
+            </Suspense>
+          }
+        />
 
-      {/* Presence only exists behind the auth gate — the sign-in screens have
-          nobody to report as online. */}
-      <Route
-        element={
-          <RequireAuth>
-            <CapabilitiesProvider>
-              <PresenceProvider>
-                <NotificationsProvider>
-                  <AppShell />
-                </NotificationsProvider>
-              </PresenceProvider>
-            </CapabilitiesProvider>
-          </RequireAuth>
-        }
-      >
-        <Route element={<WorkOnly />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="inbox" element={<InboxPage />} />
-          {/* The inbox read from the other side: what the client is waiting on. */}
-          <Route path="verification" element={<VerificationPage />} />
-          <Route path="insights" element={<InsightsPage />} />
-          <Route path="schedule" element={<SchedulePage />} />
-          <Route path="skills" element={<SkillsPage />} />
-          <Route path="clients/:id" element={<ClientPage />} />
-          {/* The same client read as a programme: what changed between engagements. */}
-          <Route path="clients/:id/programme" element={<ProgrammePage />} />
-          <Route path="engagements" element={<EngagementsPage />} />
-          <Route path="deliverables" element={<DeliverablesPage />} />
-          {/* Its own page rather than a filter, because it answers a different question. */}
-          <Route path="archive" element={<ArchivePage />} />
-          <Route path="engagements/:id" element={<EngagementEditorPage />} />
-          {/* A finding is a thing people link to — in a ticket, in Slack, from the
-              notification that told them they were mentioned in it. */}
-          <Route path="engagements/:id/findings/:findingId" element={<EngagementEditorPage />} />
-          {/*
-            The enumeration workbench: the same component as the tab, in a room the right shape for a
-            tree of sixty rows. A route of its own so it can be linked to and left open.
-          */}
-          <Route path="engagements/:id/enumeration" element={<EnumerationPage />} />
-          {/* Yours alone, and belonging to no engagement — see the page for why. */}
-          <Route path="scratchpad" element={<ScratchpadPage />} />
-          {/* Presence, aggregated: who is where, and what nobody is looking at. */}
-          <Route path="now" element={<FloorPage />} />
-          <Route path="engagements/:id/print" element={<ReportPrintPage />} />
-          <Route path="library" element={<LibraryPage />} />
-          <Route path="checklists" element={<ChecklistsPage />} />
-          <Route path="templates" element={<TemplatesPage />} />
-          <Route path="templates/html/:id" element={<HtmlTemplateEditorPage />} />
-          {/* Where a template is diagnosed: every placeholder in place, with what it resolves to. */}
-          <Route path="templates/:id/playground" element={<TemplatePlaygroundPage />} />
-          <Route path="data" element={<DataPage />} />
-          {/* The work side of the pipeline: what needs an estimate or a contract checked, and
-              what has been won and is not yet a job. */}
-          <Route path="proposals" element={<ProposalsPage view="queue" />} />
-          <Route path="inquiries" element={<ProposalsPage view="inquiries" />} />
+        {/* Presence only exists behind the auth gate — the sign-in screens have
+            nobody to report as online. */}
+        <Route
+          element={
+            <RequireAuth>
+              <CapabilitiesProvider>
+                <PresenceProvider>
+                  <NotificationsProvider>
+                    <AppShell />
+                  </NotificationsProvider>
+                </PresenceProvider>
+              </CapabilitiesProvider>
+            </RequireAuth>
+          }
+        >
+          <Route element={<WorkOnly />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="inbox" element={<InboxPage />} />
+            {/* The inbox read from the other side: what the client is waiting on. */}
+            <Route path="verification" element={<VerificationPage />} />
+            <Route path="insights" element={<InsightsPage />} />
+            <Route path="schedule" element={<SchedulePage />} />
+            <Route path="skills" element={<SkillsPage />} />
+            <Route path="clients/:id" element={<ClientPage />} />
+            {/* The same client read as a programme: what changed between engagements. */}
+            <Route path="clients/:id/programme" element={<ProgrammePage />} />
+            <Route path="engagements" element={<EngagementsPage />} />
+            <Route path="deliverables" element={<DeliverablesPage />} />
+            {/* Its own page rather than a filter, because it answers a different question. */}
+            <Route path="archive" element={<ArchivePage />} />
+            <Route path="engagements/:id" element={<EngagementEditorPage />} />
+            {/* A finding is a thing people link to — in a ticket, in Slack, from the
+                notification that told them they were mentioned in it. */}
+            <Route path="engagements/:id/findings/:findingId" element={<EngagementEditorPage />} />
+            {/*
+              The enumeration workbench: the same component as the tab, in a room the right shape for a
+              tree of sixty rows. A route of its own so it can be linked to and left open.
+            */}
+            <Route path="engagements/:id/enumeration" element={<EnumerationPage />} />
+            {/* Yours alone, and belonging to no engagement — see the page for why. */}
+            <Route path="scratchpad" element={<ScratchpadPage />} />
+            {/* Presence, aggregated: who is where, and what nobody is looking at. */}
+            <Route path="now" element={<FloorPage />} />
+            <Route path="engagements/:id/print" element={<ReportPrintPage />} />
+            <Route path="library" element={<LibraryPage />} />
+            <Route path="checklists" element={<ChecklistsPage />} />
+            <Route path="templates" element={<TemplatesPage />} />
+            <Route path="templates/html/:id" element={<HtmlTemplateEditorPage />} />
+            {/* Where a template is diagnosed: every placeholder in place, with what it resolves to. */}
+            <Route path="templates/:id/playground" element={<TemplatePlaygroundPage />} />
+            <Route path="data" element={<DataPage />} />
+            {/* The work side of the pipeline: what needs an estimate or a contract checked, and
+                what has been won and is not yet a job. */}
+            <Route path="proposals" element={<ProposalsPage view="queue" />} />
+            <Route path="inquiries" element={<ProposalsPage view="inquiries" />} />
+          </Route>
+
+          {/* Outside the wall: changing your own password is not work, and every role needs
+              it. The page hides the parts a sales account has no use for. */}
+          <Route path="profile" element={<ProfilePage />} />
+          <Route
+            path="sales"
+            element={
+              <RequireSales>
+                <SalesPage />
+              </RequireSales>
+            }
+          />
+          <Route
+            path="sales/proposals"
+            element={
+              <RequireSales>
+                <SalesProposalsPage />
+              </RequireSales>
+            }
+          />
+          <Route
+            path="sales/clients"
+            element={
+              <RequireSales>
+                <SalesClientsPage />
+              </RequireSales>
+            }
+          />
+          {/* RequireSales rather than admin-only: raising the invoices is the selling side's job,
+              and the endpoint behind it is on /proposals, which both audiences reach. */}
+          <Route
+            path="sales/invoicing"
+            element={
+              <RequireSales>
+                <SalesInvoicingPage />
+              </RequireSales>
+            }
+          />
+          {/* The Sales log is a managerial view of who did what, so it is admin-only rather than
+              RequireSales — the API agrees; see the route in sales.routes.js. */}
+          <Route
+            path="sales/activity"
+            element={
+              <RequireAdmin>
+                <SalesActivityPage />
+              </RequireAdmin>
+            }
+          />
+          {/* This section was called Financial for one commit. A bookmark or an open tab from
+              that window is worth a redirect rather than a 404. */}
+          <Route path="finance" element={<Navigate to="/sales" replace />} />
+          <Route
+            path="team"
+            element={
+              <RequireAdmin>
+                <TeamPage />
+              </RequireAdmin>
+            }
+          />
+          <Route
+            path="users"
+            element={
+              <RequireAdmin>
+                <UsersPage />
+              </RequireAdmin>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <RequireAdmin>
+                <SettingsPage />
+              </RequireAdmin>
+            }
+          />
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
-
-        {/* Outside the wall: changing your own password is not work, and every role needs
-            it. The page hides the parts a sales account has no use for. */}
-        <Route path="profile" element={<ProfilePage />} />
-        <Route
-          path="sales"
-          element={
-            <RequireSales>
-              <SalesPage />
-            </RequireSales>
-          }
-        />
-        <Route
-          path="sales/proposals"
-          element={
-            <RequireSales>
-              <SalesProposalsPage />
-            </RequireSales>
-          }
-        />
-        <Route
-          path="sales/clients"
-          element={
-            <RequireSales>
-              <SalesClientsPage />
-            </RequireSales>
-          }
-        />
-        {/* RequireSales rather than admin-only: raising the invoices is the selling side's job,
-            and the endpoint behind it is on /proposals, which both audiences reach. */}
-        <Route
-          path="sales/invoicing"
-          element={
-            <RequireSales>
-              <SalesInvoicingPage />
-            </RequireSales>
-          }
-        />
-        {/* The Sales log is a managerial view of who did what, so it is admin-only rather than
-            RequireSales — the API agrees; see the route in sales.routes.js. */}
-        <Route
-          path="sales/activity"
-          element={
-            <RequireAdmin>
-              <SalesActivityPage />
-            </RequireAdmin>
-          }
-        />
-        {/* This section was called Financial for one commit. A bookmark or an open tab from
-            that window is worth a redirect rather than a 404. */}
-        <Route path="finance" element={<Navigate to="/sales" replace />} />
-        <Route
-          path="team"
-          element={
-            <RequireAdmin>
-              <TeamPage />
-            </RequireAdmin>
-          }
-        />
-        <Route
-          path="users"
-          element={
-            <RequireAdmin>
-              <UsersPage />
-            </RequireAdmin>
-          }
-        />
-        <Route
-          path="settings"
-          element={
-            <RequireAdmin>
-              <SettingsPage />
-            </RequireAdmin>
-          }
-        />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+      </Routes>
+    </ErrorBoundary>
   );
 }

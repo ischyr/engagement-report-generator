@@ -160,8 +160,16 @@ export function parseToolOutput(tool, output) {
   return null;
 }
 
-/** The same table as HTML, for the one path in this codebase that turns HTML into a Word table. */
-export function tableToHtml(table) {
+/**
+ * The same table as HTML, for the one path in this codebase that turns HTML into a Word table.
+ *
+ * `caption` is the line over it — "nmap, 10.0.0.5" — which the report fills in from the step. It
+ * is the one table in these documents nobody can caption by hand, because nobody writes it: it is
+ * assembled from a step's output at render time. Forty rows with no name over them, in the middle
+ * of a forty-page report, is exactly the table a reader cannot place, so the step's own answer to
+ * "what is this" gets printed above it.
+ */
+export function tableToHtml(table, caption = '') {
   if (!table?.rows?.length) return '';
   const cell = (value) =>
     String(value ?? '')
@@ -172,7 +180,8 @@ export function tableToHtml(table) {
   const body = `<tbody>${table.rows
     .map((row) => `<tr>${row.map((c) => `<td>${cell(c)}</td>`).join('')}</tr>`)
     .join('')}</tbody>`;
-  return `<table>${head}${body}</table>`;
+  const label = String(caption ?? '').trim();
+  return `<table>${label ? `<caption>${cell(label)}</caption>` : ''}${head}${body}</table>`;
 }
 
 /* ------------------------------------------------------------------- cache ---- */

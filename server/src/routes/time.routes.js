@@ -159,6 +159,98 @@ router.get(
 );
 
 /**
+ * The days you worked on something and never said how long for.
+ *
+ * Hours are the one record in this app that nothing ever asks for. A booking is made in advance
+ * and a finding announces itself; a timesheet is a thing somebody has to remember, at the end of
+ * a week in which remembering is the last thing on their mind. So the numbers that matter most —
+ * the difference between what was sold, what was planned and what it took — are the numbers most
+ * likely to be missing, and they are missing in exactly the weeks that were worst.
+ *
+ * The evidence is the activity log: it already records who did what on which engagement and when,
+ * and "you edited four findings on Thursday" is as close to "you worked on Thursday" as anything
+ * in the database gets. It is a prompt rather than a claim — the hours are still yours to state,
+ * and a day you spent reading rather than typing will not appear here.
+ *
+ * Deliberately not written anywhere. This is a question, asked each time it is looked at, not a
+ * to-do list that would then need dismissing and remembering not to ask again.
+ */
+const DEFAULT_LOOKBACK_DAYS = 21;
+
+router.get(
+  '/unlogged',
+  asyncHandler(async (req, res) => {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || DEFAULT_LOOKBACK_DAYS));
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const audits = await Audit.find(visibleAuditFilter(req.user)).select('name reference company');
+    const byId = new Map(audits.map((audit) => [String(audit._id), audit]));
+
+    const { Activity } = await import('../models/activity.model.js');
+    const touched = await Activity.find({
+      actor: req.user._id,
+      audit: { $in: audits.map((audit) => audit._id) },
+      createdAt: { $gte: since },
+    })
+      .select('audit createdAt')
+      .lean();
+
+    /*
+     * A day is the local calendar day the work happened on, because that is what somebody is
+     * being asked to remember. `toISOString` would move an evening's work in the west onto the
+     * following morning and ask about a day nobody worked.
+     */
+    const dayOf = (date) => {
+      const local = new Date(date);
+      const month = String(local.getMonth() + 1).padStart(2, '0');
+      const day = String(local.getDate()).padStart(2, '0');
+      return `${local.getFullYear()}-${month}-${day}`;
+    };
+
+    const worked = new Map();
+    for (const row of touched) {
+      const key = `${String(row.audit)}:${dayOf(row.createdAt)}`;
+      worked.set(key, (worked.get(key) ?? 0) + 1);
+    }
+
+    const logged = await TimeEntry.find({
+      user: req.user._id,
+      day: { $gte: dayOf(since) },
+    })
+      .select('audit day')
+      .lean();
+    const already = new Set(logged.map((entry) => `${String(entry.audit)}:${entry.day}`));
+
+    const gaps = [];
+    for (const [key, actions] of worked) {
+      if (already.has(key)) continue;
+      const [auditId, day] = key.split(':');
+      const audit = byId.get(auditId);
+      if (!audit) continue;
+      gaps.push({
+        auditId,
+        auditName: audit.name,
+        reference: audit.reference ?? '',
+        day,
+        /* How much you did, so the oldest and busiest day is the one to start with. */
+        actions,
+      });
+    }
+
+    /* Oldest first: the day you are least likely to still remember is the one to ask about. */
+    gaps.sort((a, b) => a.day.localeCompare(b.day) || b.actions - a.actions);
+
+    res.json({
+      days,
+      gaps,
+      hoursPerDay: HOURS_PER_DAY,
+      /** Distinct dates, which is the number worth putting on a badge. */
+      dates: new Set(gaps.map((gap) => gap.day)).size,
+    });
+  })
+);
+
+/**
  * Log a day, or correct one.
  *
  * An upsert rather than a create, because the unique index says a person has one entry per

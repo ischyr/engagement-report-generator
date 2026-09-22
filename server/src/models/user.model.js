@@ -228,6 +228,20 @@ const userSchema = new mongoose.Schema(
      * of record does not need a migration to become lockable.
      */
     location: { type: String, default: '', maxlength: 200 },
+
+    /* ----------------------------- what to be told ------------------------- */
+    /**
+     * The kinds of notification this person has turned off.
+     *
+     * Stored as what you switched **off**, not what you want. Every account that existed before
+     * this field did has none, and a "what you want" list would have been empty for all of them —
+     * which would have quietly stopped telling the entire firm anything on the day it shipped.
+     *
+     * A Map keyed by the notification type, so a nineteenth kind is not a migration. The rule that
+     * reads it, and the two types it refuses to switch off, live in `services/notify.service.js`
+     * rather than here: the schema's job is to hold the answer, not to decide it.
+     */
+    notificationsOff: { type: Map, of: Boolean, default: undefined },
   },
   { timestamps: true }
 );

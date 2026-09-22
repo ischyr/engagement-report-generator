@@ -71,7 +71,27 @@ export function buildProposalData(proposal, settings, ooxmlOptions, options = {}
   const company = proposal.company ?? null;
   const contacts = (proposal.contacts ?? []).map(personSummary);
 
-  const rich = (html) => (html ? htmlToOoxml(String(html), ooxmlOptions) : '<w:p/>');
+  /**
+   * A field as OOXML, converted when a template asks and not before.
+   *
+   * Lazy for the reason the report's fields are — see `expandRichFields` in `report.service.js`.
+   * Converting writes any picture in the field straight into the package, so doing it for a field
+   * the template never prints leaves that picture in the document with nothing referencing it.
+   *
+   * Far less likely to bite here than in a report — a proposal's prose is written before any
+   * testing and rarely holds a screenshot — but a proposal *is* the document that goes to somebody
+   * outside the engagement, so it is the wrong place to rely on that staying true.
+   *
+   * Memoised by the markup itself, so two tags reading the same field convert it once.
+   */
+  const converted = new Map();
+  const rich = (html) => {
+    const key = String(html ?? '');
+    if (!converted.has(key)) {
+      converted.set(key, key ? htmlToOoxml(key, ooxmlOptions) : '<w:p/>');
+    }
+    return converted.get(key);
+  };
   /* Once, not once per tag that mentions it: `priceOf` reads the rate card and the client's rate. */
   const price = priceOf(proposal, proposal.company, settings);
   const moneyText = (amount) => formatMoney(amount, price.currency);
@@ -93,9 +113,15 @@ export function buildProposalData(proposal, settings, ooxmlOptions, options = {}
     summary: proposal.summary ?? '',
     constraints: proposal.constraints ?? '',
     /** The same two as OOXML, for a template that wants formatting rather than a line of text. */
-    'rich.summary': rich(proposal.summary),
-    'rich.constraints': rich(proposal.constraints),
-    'rich.evaluationNotes': rich(proposal.evaluation?.notes),
+    get 'rich.summary'() {
+      return rich(proposal.summary);
+    },
+    get 'rich.constraints'() {
+      return rich(proposal.constraints);
+    },
+    get 'rich.evaluationNotes'() {
+      return rich(proposal.evaluation?.notes);
+    },
 
     /* ------------------------------------------------------------------- dates */
     requestedOn: dayOrEmpty(proposal.requestedOn, dateFormat),

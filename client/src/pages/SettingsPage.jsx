@@ -37,7 +37,6 @@ import { Button } from '../components/ui/Button.jsx';
 import { Input, Toggle, Field } from '../components/ui/Field.jsx';
 import { ConfirmDialog } from '../components/ui/Modal.jsx';
 import { ErrorState, LoadingBlock } from '../components/ui/Feedback.jsx';
-import SettingsHistoryCard from '../components/settings/SettingsHistoryCard.jsx';
 import EmailCard from '../components/settings/EmailCard.jsx';
 import AssistantCard from '../components/settings/AssistantCard.jsx';
 import PdfCard from '../components/settings/PdfCard.jsx';
@@ -151,6 +150,11 @@ export function formFor(data) {
         captionStyle: data.report?.public?.captionStyle ?? 'Caption',
         figureNumbering: data.report?.public?.figureNumbering !== false,
         figureLabel: data.report?.public?.figureLabel ?? 'Figure',
+        tableNumbering: data.report?.public?.tableNumbering !== false,
+        tableLabel: data.report?.public?.tableLabel ?? 'Table',
+        codeHighlight: data.report?.public?.codeHighlight !== false,
+        codeLineNumbers: Boolean(data.report?.public?.codeLineNumbers),
+        findingPerPage: Boolean(data.report?.public?.findingPerPage),
         dateFormat: data.report?.public?.dateFormat ?? 'yyyy-MM-dd',
         findingIdPrefix: data.report?.public?.findingIdPrefix ?? '',
         codeBlockTheme: data.report?.public?.codeBlockTheme ?? 'terminal',
@@ -244,13 +248,6 @@ export default function SettingsPage() {
 
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
-  /**
-   * Bumped after a save or a reset, so the history card below refetches.
-   *
-   * A key rather than a callback: the card owns its own request, and remounting it is both the
-   * smallest change and the one that cannot leave it showing a list that is one save stale.
-   */
-  const [savedAt, setSavedAt] = useState(0);
   /** What the form looked like when it was seeded, as JSON — see `dirty` below. */
   const pristineRef = useRef('');
   const [resetOpen, setResetOpen] = useState(false);
@@ -288,7 +285,6 @@ export default function SettingsPage() {
     try {
       const updated = await api.put('/settings', form);
       setData(updated);
-      setSavedAt(Date.now());
       /*
        * And tell the rest of the app, because some of what is on this page decides whether a
        * control exists elsewhere.
@@ -377,7 +373,6 @@ export default function SettingsPage() {
     try {
       const fresh = await api.post('/settings/reset');
       setData(fresh);
-      setSavedAt(Date.now());
       setResetOpen(false);
       toast.success('Settings restored to defaults');
     } catch (err) {
@@ -618,6 +613,30 @@ export default function SettingsPage() {
               />
             ) : null}
 
+            <Toggle
+              checked={form.report.public.tableNumbering !== false}
+              onChange={(tableNumbering) => setReport({ tableNumbering })}
+              label="Number the tables"
+              hint="A table you have named prints as “Table 3 — Hosts in scope”, on Word’s own table counter — so Table 3 and Figure 7 can sit on the same page and both be right. Tables nobody named are left alone."
+            />
+
+            {form.report.public.tableNumbering !== false ? (
+              <Input
+                label="What a table is called"
+                placeholder="Table"
+                hint="The word in front of a table’s number."
+                value={form.report.public.tableLabel}
+                onChange={(event) => setReport({ tableLabel: event.target.value })}
+              />
+            ) : null}
+
+            <Toggle
+              checked={Boolean(form.report.public.findingPerPage)}
+              onChange={(findingPerPage) => setReport({ findingPerPage })}
+              label="Start each finding on a new page"
+              hint="Every write-up begins at the top of a page, the way a long report usually reads. Set on the template before it is filled, so it needs a template whose findings loop starts with a paragraph — a heading, normally. Nothing else in the document moves."
+            />
+
             <Field
               label="Code block appearance"
               hint="How proof-of-concept commands and terminal output are drawn in the report."
@@ -660,6 +679,28 @@ export default function SettingsPage() {
                 })}
               </div>
             </Field>
+
+            {/*
+              Both of these are about the pane's contents rather than its frame, so they sit under
+              the theme picker — and neither applies to “Template”, which exists precisely to hand
+              the pane to the document's own CodeBlock style.
+            */}
+            {form.report.public.codeBlockTheme !== 'template' ? (
+              <>
+                <Toggle
+                  checked={form.report.public.codeHighlight !== false}
+                  onChange={(codeHighlight) => setReport({ codeHighlight })}
+                  label="Colour the code"
+                  hint="Requests, JSON, shell commands and queries are coloured by what they are. Nothing moves — the text is identical either way. Output nothing recognises stays one colour."
+                />
+                <Toggle
+                  checked={Boolean(form.report.public.codeLineNumbers)}
+                  onChange={(codeLineNumbers) => setReport({ codeLineNumbers })}
+                  label="Number the lines"
+                  hint="A line-number column down the side of every pane. Worth it when the prose says “line 14”; the cost is that copying a command out of the document in Word takes the numbers too. A pane that skips lines numbers itself regardless, so it can say which ones it skipped."
+                />
+              </>
+            ) : null}
 
             <div className="border-t border-line-soft pt-4">
               <Toggle
@@ -934,9 +975,6 @@ export default function SettingsPage() {
           </CardBody>
         </Card>
       </div>
-
-      {/* Last, because it is the record of everything above it. */}
-      <SettingsHistoryCard key={savedAt} />
 
       {/*
         Which build this is.
